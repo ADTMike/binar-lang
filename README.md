@@ -1,6 +1,6 @@
 # binar
 
-A systems programming language with Go-inspired syntax and **zero-cost error abstraction**, compiled to native code via LLVM.
+A systems programming language with Go-Rust-Odin-Zig-inspired syntax and **zero-cost error abstraction**, compiled to native code via LLVM.
 
 **Status**: v0.1.0 — early development. 131 tests, 126 passing.
 
