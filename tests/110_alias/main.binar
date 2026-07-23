@@ -1,0 +1,6 @@
+// exit: 42
+import { math } from "110_alias/math"
+
+fn main() int {
+    return math.Add(20, 22)
+}

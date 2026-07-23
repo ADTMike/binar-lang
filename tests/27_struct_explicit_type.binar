@@ -1,0 +1,11 @@
+// exit: 3
+type Foo {
+    a int
+    b int
+}
+
+fn main() int {
+    f := Foo{ a: 1, b: 2 }
+    sum := f.a + f.b
+    return sum
+}

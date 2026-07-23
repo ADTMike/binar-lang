@@ -1,0 +1,14 @@
+// exit: 15
+type Vec2 {
+    x int
+    y int
+}
+
+fn Distance(self *Vec2) int {
+    return self.x + self.y
+}
+
+fn main() int {
+    v := Vec2{ x: 7, y: 8 }
+    return v.Distance()
+}

@@ -1,0 +1,10 @@
+// exit: 100
+const SIZE = 10
+
+fn main() int {
+    result := 0
+    for i := 0; i < SIZE; i = i + 1 {
+        result = result + 10
+    }
+    return result
+}

@@ -1,0 +1,8 @@
+// exit: 15
+fn Sum(a int, b int, c int) int {
+    return a + b + c
+}
+
+fn main() int {
+    return Sum(3, 5, 7)
+}

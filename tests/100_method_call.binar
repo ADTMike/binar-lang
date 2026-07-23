@@ -1,0 +1,15 @@
+// exit: 24
+fn double(x int) int {
+    return x * 2
+}
+
+fn add_to(x int, y int) int {
+    return x + y
+}
+
+fn main() int {
+    x := 7
+    a := x.double()
+    b := x.add_to(3)
+    return a + b
+}

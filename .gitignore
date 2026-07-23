@@ -1,0 +1,18 @@
+# Build artifacts
+build/
+tmp/
+*.o
+output.o
+
+# Compiled test binaries
+tests/*/test
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS
+.DS_Store

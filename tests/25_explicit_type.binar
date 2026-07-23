@@ -1,0 +1,5 @@
+// exit: 42
+fn main() int {
+    x int = 42
+    return x
+}

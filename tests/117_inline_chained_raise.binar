@@ -1,0 +1,23 @@
+// exit: 2
+// Test chained error propagation: source → middle → main via non-raise inlining
+
+type Myerr {
+    code int
+}
+
+fn source() error {
+    return Myerr{code: 2}
+}
+
+fn middle() error {
+    err := source()
+    return err
+}
+
+fn main() int {
+    err := middle()
+    if err != 0 {
+        return 2
+    }
+    return 0
+}

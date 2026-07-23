@@ -1,0 +1,35 @@
+// exit: 14
+
+type ZapLogger {
+    X int
+}
+
+type ConsoleLogger {
+    X int
+}
+
+iface Logger {
+    fn GetVal(Logger)
+}
+
+fn GetVal(l ZapLogger) {
+}
+
+fn GetVal(l ConsoleLogger) {
+}
+
+fn Process(l Logger) int {
+    return 7
+}
+
+fn Add(a int, b int) int {
+    z := ZapLogger{X: 3}
+    c := ConsoleLogger{X: 4}
+    v1 := Process(z)
+    v2 := Process(c)
+    return v1 + v2
+}
+
+fn main() int {
+    return Add(0, 0)
+}

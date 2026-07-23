@@ -1,0 +1,10 @@
+// exit: 7
+type Point {
+    x int
+    y int
+}
+
+fn main() int {
+    p := Point{ x: 3, y: 4 }
+    return p.x + p.y
+}

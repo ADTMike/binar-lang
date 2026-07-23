@@ -1,0 +1,12 @@
+// exit: 0
+type Point {
+    x int
+    y int
+}
+
+fn main() int {
+    p := Point{ x: 2, y: 3 }
+    p.x = 10
+    p.y = 20
+    return p.x / p.y
+}

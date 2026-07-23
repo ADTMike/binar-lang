@@ -1,0 +1,7 @@
+// exit: 10
+fn main() int {
+    x := 5
+    y := 5
+    z := x + y
+    return z
+}

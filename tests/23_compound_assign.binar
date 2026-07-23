@@ -1,0 +1,6 @@
+// exit: 30
+fn main() int {
+    x := 10
+    x += 20
+    return x
+}

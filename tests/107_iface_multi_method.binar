@@ -1,0 +1,28 @@
+// exit: 30
+
+type ZapLogger {
+    X int
+    Y int
+}
+
+iface Logger {
+    fn GetX(Logger)
+    fn GetY(Logger)
+}
+
+fn GetX(l ZapLogger) {
+}
+
+fn GetY(l ZapLogger) {
+}
+
+fn Sum(l Logger) int {
+    l.GetX()
+    l.GetY()
+    return 30
+}
+
+fn main() int {
+    z := ZapLogger{X: 10, Y: 20}
+    return Sum(z)
+}

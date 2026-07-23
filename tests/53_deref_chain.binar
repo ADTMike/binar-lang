@@ -1,0 +1,7 @@
+// exit: 5
+fn main() int {
+    x := 42
+    p := &x
+    val := *p
+    return val - 37
+}

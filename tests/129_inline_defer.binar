@@ -1,0 +1,27 @@
+// exit: 0
+// Test: defer inside inlined interface-returning function executes
+
+type Myerr {
+    code int
+}
+
+fn store(addr *int, val int) {
+    *addr = val
+}
+
+fn get_value(flag *int) error {
+    defer store(flag, 42)
+    return nil
+}
+
+fn main() int {
+    flag := 0
+    err := get_value(&flag)
+    if err != 0 {
+        return 1
+    }
+    if flag != 42 {
+        return 2
+    }
+    return 0
+}

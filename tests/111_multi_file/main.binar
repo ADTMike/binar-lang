@@ -1,0 +1,6 @@
+// exit: 11
+import { b } from "111_multi_file/mypkg"
+
+fn main() int {
+    return b.Calc(10)
+}

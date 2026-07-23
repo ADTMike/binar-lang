@@ -1,0 +1,22 @@
+// error: raise on multi-return function 'div' must use binding form
+// Test: standalone raise on multi-return (T, error) function is rejected
+
+type Myerr {
+    code int
+}
+
+fn div(a int, b int) (int, error) {
+    if b == 0 {
+        return 0, Myerr{code: 1}
+    }
+    return a / b, nil
+}
+
+fn caller() int {
+    div(10, 2) raise
+    return 0
+}
+
+fn main() int {
+    return caller()
+}

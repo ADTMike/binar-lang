@@ -1,0 +1,11 @@
+// exit: 2
+fn main() int {
+    x := 10
+    if x > 20 {
+        return 1
+    } else if x > 5 {
+        return 2
+    } else {
+        return 3
+    }
+}

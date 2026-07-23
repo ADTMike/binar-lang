@@ -1,0 +1,6 @@
+// exit: 6
+import { b } from "112_visibility/mypkg"
+
+fn main() int {
+    return b.Compute(5)
+}

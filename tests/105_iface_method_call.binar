@@ -1,0 +1,24 @@
+// exit: 10
+
+type Counter {
+    Val int
+}
+
+iface Logger {
+    fn Increment(Logger)
+}
+
+fn Increment(l Counter) {
+}
+
+fn Process(l Logger) int {
+    l.Increment()
+    l.Increment()
+    l.Increment()
+    return 10
+}
+
+fn main() int {
+    c := Counter{Val: 0}
+    return Process(c)
+}

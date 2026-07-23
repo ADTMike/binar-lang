@@ -1,0 +1,24 @@
+// exit: 0
+
+type ZapLogger {
+    X int
+}
+
+iface Logger {
+    fn SetVal(*Logger)
+}
+
+fn SetVal(l *ZapLogger) {
+    l.X = 99
+}
+
+fn Process(l Logger) int {
+    l.SetVal()
+    return 0
+}
+
+fn main() int {
+    z := ZapLogger{X: 0}
+    Process(z)
+    return z.X
+}

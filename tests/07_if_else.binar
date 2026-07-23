@@ -1,0 +1,8 @@
+// exit: 10
+fn main() int {
+    x := 10
+    if x > 5 {
+        return 10
+    }
+    return 0
+}

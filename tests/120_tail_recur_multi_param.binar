@@ -1,0 +1,19 @@
+// exit: 15
+// Test tail recursion with accumulator: sum(5, 0) = 0+1+2+3+4 = 10... actually let's do 1+2+3+4+5 = 15
+
+fn sum(n int, acc int) error {
+    if n <= 0 {
+        return acc
+    }
+    return sum(n - 1, acc + n)
+}
+
+fn main() int {
+    err := sum(5, 0)
+    // err is the sum value converted to i64
+    // For success, err == 15 (which is non-zero)
+    if err == 15 {
+        return 15
+    }
+    return 1
+}

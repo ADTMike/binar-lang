@@ -1,0 +1,8 @@
+// exit: 30
+fn Add(a int, b int) int {
+    return a + b
+}
+
+fn main() int {
+    return Add(10, 20)
+}

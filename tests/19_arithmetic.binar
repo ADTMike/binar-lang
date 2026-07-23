@@ -1,0 +1,6 @@
+// exit: 42
+fn main() int {
+    x := 10
+    y := 32
+    return x + y
+}

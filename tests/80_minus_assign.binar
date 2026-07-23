@@ -1,0 +1,6 @@
+// exit: 3
+fn main() int {
+    x := 10
+    x -= 7
+    return x
+}

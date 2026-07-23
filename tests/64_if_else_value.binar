@@ -1,0 +1,10 @@
+// exit: 5
+fn main() int {
+    a := 3
+    b := 7
+    if a > b {
+        return a
+    } else {
+        return b - 2
+    }
+}

@@ -1,0 +1,5 @@
+// exit: 255
+fn main() int {
+    x := 0b11111111
+    return x
+}

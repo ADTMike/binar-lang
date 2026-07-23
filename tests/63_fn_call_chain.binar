@@ -1,0 +1,12 @@
+// exit: 42
+fn Identity(x int) int {
+    return x
+}
+
+fn Double(x int) int {
+    return Identity(x) + Identity(x)
+}
+
+fn main() int {
+    return Double(21)
+}

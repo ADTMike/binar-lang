@@ -1,0 +1,8 @@
+// exit: 21
+import { math } from "102_module_import/math"
+
+fn main() int {
+    a := math.Add(7, 8)
+    b := math.Double(3)
+    return a + b
+}

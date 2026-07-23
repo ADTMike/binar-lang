@@ -1,0 +1,6 @@
+// exit: 6
+fn main() int {
+    x := 3
+    y := x << 1
+    return y
+}

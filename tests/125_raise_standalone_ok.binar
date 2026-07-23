@@ -1,0 +1,19 @@
+// exit: 0
+// Test: standalone raise on single-error-return function is OK (positive case)
+
+type Myerr {
+    code int
+}
+
+fn get_error() error {
+    return Myerr{code: 42}
+}
+
+fn caller() int {
+    get_error() raise
+    return 0
+}
+
+fn main() int {
+    return 0
+}

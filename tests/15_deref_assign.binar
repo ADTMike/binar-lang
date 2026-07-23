@@ -1,0 +1,7 @@
+// exit: 99
+fn main() int {
+    x := 10
+    p := &x
+    *p = 99
+    return x
+}

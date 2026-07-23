@@ -1,0 +1,11 @@
+// exit: 5
+fn Max(a int, b int) int {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+fn main() int {
+    return Max(3, 5)
+}

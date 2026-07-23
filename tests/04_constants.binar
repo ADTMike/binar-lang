@@ -1,0 +1,6 @@
+// exit: 100
+const N = 100
+
+fn main() int {
+    return N
+}

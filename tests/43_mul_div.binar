@@ -1,0 +1,5 @@
+// exit: 9
+fn main() int {
+    x := 3
+    return x * x
+}

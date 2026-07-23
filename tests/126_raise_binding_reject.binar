@@ -1,0 +1,19 @@
+// error: raise on single-error-return function 'get_error' must be standalone
+// Test: binding raise on single-error-return function is rejected
+
+type Myerr {
+    code int
+}
+
+fn get_error() error {
+    return Myerr{code: 42}
+}
+
+fn caller() int {
+    err := get_error() raise
+    return 0
+}
+
+fn main() int {
+    return caller()
+}

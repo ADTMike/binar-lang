@@ -1,0 +1,43 @@
+// exit: 0
+// Test defer keyword — LIFO order, works with raise
+
+fn store(addr *int, val int) int {
+    *addr = val
+    return 0
+}
+
+fn inner(should_fail int) (int, int) {
+    if should_fail != 0 {
+        return 0, 5
+    }
+    return 42, 0
+}
+
+fn test_lifo(flag *int) int {
+    defer store(flag, 1)
+    defer store(flag, 2)
+    return 0
+}
+
+fn test_raise(flag *int) (int, int) {
+    defer store(flag, 99)
+    // raise triggers return on error; deferred calls should still fire
+    r := inner(1) raise
+    return r, 0
+}
+
+fn main() int {
+    // Test LIFO order
+    f := 0
+    test_lifo(&f)
+    if f != 1 { return 1 }
+
+    // Test raise with defer
+    f2 := 0
+    _, err := test_raise(&f2)
+    if err != 5 { return 2 }
+    // Deferred store should have set f2 to 99
+    if f2 != 99 { return 3 }
+
+    return 0
+}

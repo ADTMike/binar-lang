@@ -1,0 +1,6 @@
+// exit: 15
+fn main() int {
+    x := 0b1100
+    y := 0b0011
+    return x | y
+}

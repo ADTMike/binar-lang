@@ -1,0 +1,14 @@
+// error: interface-returning function 'f' has non-tail recursive calls which would cause infinite inlining
+// Test: non-tail recursion should produce compile error
+// This should fail to compile because f(n-1) + 1 is not a tail call
+
+fn f(n int) error {
+    if n <= 0 {
+        return nil
+    }
+    return f(n - 1) + 1
+}
+
+fn main() int {
+    return 1
+}

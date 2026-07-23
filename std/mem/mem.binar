@@ -1,0 +1,9 @@
+type Arena {
+    data u64
+    size u64
+    offset u64
+}
+
+fn NewArenaAllocator() Arena {
+    return Arena{ data: 0, size: 0, offset: 0 }
+}

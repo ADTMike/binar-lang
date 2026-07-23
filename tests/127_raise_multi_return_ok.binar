@@ -1,0 +1,22 @@
+// exit: 0
+// Test: binding raise on multi-return (T, error) function is OK (positive case)
+
+type Myerr {
+    code int
+}
+
+fn div(a int, b int) (int, error) {
+    if b == 0 {
+        return 0, Myerr{code: 1}
+    }
+    return a / b, nil
+}
+
+fn caller() int {
+    x := div(10, 2) raise
+    return x + 100
+}
+
+fn main() int {
+    return 0
+}

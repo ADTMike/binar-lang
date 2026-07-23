@@ -1,0 +1,16 @@
+// error: mutual recursion detected among interface-returning functions
+// Test: mutual recursion should produce compile error
+
+fn a() error {
+    b() raise
+    return nil
+}
+
+fn b() error {
+    a() raise
+    return nil
+}
+
+fn main() int {
+    return 1
+}

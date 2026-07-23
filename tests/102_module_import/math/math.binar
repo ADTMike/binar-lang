@@ -1,0 +1,7 @@
+fn Add(a int, b int) int {
+    return a + b
+}
+
+fn Double(x int) int {
+    return x * 2
+}

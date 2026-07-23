@@ -1,0 +1,11 @@
+// exit: 21
+type Node {
+    val int
+    next int
+}
+
+fn main() int {
+    a := Node{ val: 10, next: 0 }
+    b := Node{ val: 11, next: 0 }
+    return a.val + b.val
+}

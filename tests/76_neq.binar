@@ -1,0 +1,9 @@
+// exit: 2
+fn main() int {
+    x := 10
+    y := 10
+    if x != y {
+        return 1
+    }
+    return 2
+}

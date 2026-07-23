@@ -1,0 +1,9 @@
+fn Print(s string) {
+    asm volatile("syscall" : : "{rax}" (1), "{rdi}" (1), "{rsi}" (s), "{rdx}" (0) : "rcx", "r11")
+}
+
+fn Println(s string) {
+    asm volatile("syscall" : : "{rax}" (1), "{rdi}" (1), "{rsi}" (s), "{rdx}" (0) : "rcx", "r11")
+    nl := "\n"
+    asm volatile("syscall" : : "{rax}" (1), "{rdi}" (1), "{rsi}" (nl), "{rdx}" (1) : "rcx", "r11")
+}

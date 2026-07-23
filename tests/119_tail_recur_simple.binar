@@ -1,0 +1,18 @@
+// exit: 0
+// Test simple tail recursion: should be transformed to while loop
+// countdown(5) descends to 0 and returns nil (success)
+
+fn countdown(n int) error {
+    if n <= 0 {
+        return nil
+    }
+    return countdown(n - 1)
+}
+
+fn main() int {
+    err := countdown(5)
+    if err != 0 {
+        return 1
+    }
+    return 0
+}

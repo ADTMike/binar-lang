@@ -1,0 +1,8 @@
+// exit: 1
+fn main() int {
+    x := 42
+    p := &x
+    q := p + 1
+    diff := q - p
+    return diff
+}

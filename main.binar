@@ -1,0 +1,363 @@
+// ============================================
+// binar language - complete syntax showcase
+// ============================================
+
+// --- Method rules ---
+// Methods are just functions where the first parameter is the receiver type.
+// Dot notation is sugar: v.Add(x) is equivalent to Add(&v, x).
+// Rules:
+//   - Same name + different first param type = OK (different methods on different types)
+//   - Same name + same first param type = ERROR (no overloading, use different name)
+//   - One function per name per type. No overloading by parameter count.
+//
+// Example:
+//   fn Length(v *Vec2) int { ... }    // method on *Vec2
+//   fn Length(s string) int { ... }   // method on string (OK, different type)
+//   fn Process(v *Vec2) int { ... }   // method on *Vec2
+//   fn Process(v *Vec2, x int) int { ... }  // ERROR: use ProcessWith or similar
+
+import (
+    "mem"
+    "fmt"
+)
+
+// --- Structs / Types ---
+// Uppercase first letter = public, lowercase = private
+type Vec2 {
+    X int
+    Y int
+}
+
+type Entity {
+    name string
+    health int
+    alive bool
+    inventory []Item
+}
+
+type Item {
+    Name string
+    stackable bool
+    count int
+}
+
+// --- Constants (immutable) ---
+const MAX_HEALTH = 100
+const GRAVITY = 9.81
+const TAG = 'X'
+
+// --- Fixed-size arrays ---
+const GRID_SIZE = 4
+
+type Grid {
+    cells [GRID_SIZE][GRID_SIZE]int
+    data  [8]u8
+}
+
+// --- Standalone Functions ---
+fn Add(a int, b int) int {
+    return a + b
+}
+
+fn Clamp(value int, min int, max int) int {
+    if value < min {
+        return min
+    }
+    if value > max {
+        return max
+    }
+    return value
+}
+
+// --- Multiple return values ---
+fn Divmod(a int, b int) (int, int) {
+    return a / b, a % b
+}
+
+fn SplitIndex(s string, delimiter u8) (string, string) {
+    return "", ""
+}
+
+// --- Error handling ---
+fn Divide(a int, b int) (int, error) {
+    if b == 0 {
+        panic("division by zero")
+    }
+    return a / b, nil
+}
+
+fn SafeDivide(a int, b int) int {
+    result, err := Divide(a, b)
+    if err != nil {
+        return 0
+    }
+    return result
+}
+
+// --- Methods (first param = receiver, no special syntax) ---
+fn AddVec(v *Vec2, other Vec2) {
+    v.X += other.X
+    v.Y += other.Y
+}
+
+fn LengthSq(v *Vec2) int {
+    return v.X * v.X + v.Y * v.Y
+}
+
+fn Distance(a Vec2, b Vec2) int {
+    dx := a.X - b.X
+    dy := a.Y - b.Y
+    return dx * dx + dy * dy
+}
+
+fn IsAlive(e *Entity) bool {
+    return e.alive
+}
+
+fn TakeDamage(e *Entity, amount int) {
+    e.health -= amount
+    if e.health <= 0 {
+        e.health = 0
+        e.alive = false
+    }
+}
+
+fn Heal(e *Entity, amount int) {
+    e.health += amount
+    e.health = Clamp(e.health, 0, MAX_HEALTH)
+}
+
+// --- Entry Point ---
+fn main() {
+    allocator := mem.NewArenaAllocator()
+
+    // --- Declarations (type inferred) ---
+    x := 42
+    y := 3.14
+    g := true
+    c := 'A'
+    s := "hello world"
+
+    // --- Declarations (explicit type, zero-initialized) ---
+    counter int
+    name string
+    flag bool
+    score float
+
+    // --- Declarations (explicit type + value) ---
+    x2 int = 42
+    pi float = 3.14
+    label string = "hello"
+
+    // --- Reassignment ---
+    x = 99
+    s = "new value"
+    counter = 10
+
+    // --- Increment / Decrement ---
+    counter++
+    counter--
+
+    // --- Compound assignment ---
+    counter += 5
+    counter -= 3
+    counter *= 2
+    counter /= 4
+    counter %= 7
+
+    // --- Stack allocation ---
+    v1 := Vec2{ X: 3, Y: 4 }
+    v2 := Vec2{ X: 1, Y: 2 }
+
+    // --- Method calls (dot notation) ---
+    v1.AddVec(v2)
+    len := v1.LengthSq()
+
+    // --- Standalone calls (all args explicit) ---
+    AddVec(&v1, v2)
+    d := Distance(v1, v2)
+
+    // --- Multiple returns ---
+    q, r := Divmod(17, 5)
+    before, after := SplitIndex("hello:world", ':')
+
+    // --- Heap allocation ---
+    entity := new(allocator, Entity{
+        name: "goblin",
+        health: MAX_HEALTH,
+        alive: true,
+    })
+    defer delete(entity)
+
+    // --- Arrays ---
+    grid := Grid{}
+    grid.cells[0][0] = 1
+    grid.data[0] = 0xFF
+
+    buf := [5]int{ 10, 20, 30, 40, 50 }
+    buf[2] = 99
+
+    // --- Slices ---
+    items := []Item{
+        Item{ Name: "sword", stackable: false, count: 1 },
+        Item{ Name: "potion", stackable: true, count: 5 },
+    }
+
+    // --- Indexing ---
+    first := buf[0]
+    second := items[1]
+
+    // --- Slicing ---
+    sub := buf[1:4]
+    head := buf[:3]
+    tail := buf[2:]
+
+    // --- Type casting ---
+    f := int(3.14)
+    i := float(42)
+
+    // --- Control flow: if/else ---
+    if entity.health > 50 {
+        fmt.Println("healthy")
+    } else if entity.health > 0 {
+        fmt.Println("wounded")
+    } else {
+        fmt.Println("dead")
+    }
+
+    // --- Control flow: for loop ---
+    for i := 0; i < 10; i = i + 1 {
+        TakeDamage(entity, 5)
+        if !entity.alive {
+            break
+        }
+    }
+
+    // --- Control flow: for loop with increment and continue ---
+    for i := 0; i < 10; i++ {
+        if i % 2 == 0 {
+            continue
+        }
+        fmt.Println(i)
+    }
+
+    // --- Control flow: while loop ---
+    while entity.alive {
+        Heal(entity, 1)
+    }
+
+    // --- Control flow: while with break ---
+    while true {
+        if entity.health >= MAX_HEALTH {
+            break
+        }
+        Heal(entity, 1)
+    }
+
+    // --- Control flow: for range ---
+    for idx, val := range buf {
+        fmt.Println(idx, val)
+    }
+
+    // --- Control flow: for range with _ (ignore index) ---
+    for _, val := range items {
+        fmt.Println(val.Name)
+    }
+
+    // --- Control flow: for range with _ (ignore value) ---
+    for idx, _ := range buf {
+        fmt.Println(idx)
+    }
+
+    // --- Control flow: switch (value matching) ---
+    day := "Monday"
+    switch day {
+    case "Monday":
+        fmt.Println("start of week")
+    case "Wednesday":
+        fmt.Println("midweek")
+    case "Friday":
+        fmt.Println("almost weekend")
+    case "Saturday", "Sunday":
+        fmt.Println("weekend")
+    default:
+        fmt.Println("regular day")
+    }
+
+    // --- Control flow: switch (expression matching) ---
+    grade int = 75
+    switch {
+    case grade >= 90:
+        fmt.Println("A")
+    case grade >= 80:
+        fmt.Println("B")
+    case grade >= 70:
+        fmt.Println("C")
+    case grade >= 60:
+        fmt.Println("D")
+    default:
+        fmt.Println("F")
+    }
+
+    // --- Arithmetic ---
+    sum := x + 10
+    diff := x - 5
+    product := x * 2
+    quotient := x / 3
+    remainder := x % 7
+
+    // --- Bitwise operators ---
+    flags := 0b1010
+    mask := 0b1100
+    a := flags & mask
+    b := flags | mask
+    c2 := flags ^ mask
+    d2 := ~flags
+    e2 := flags << 2
+    f2 := flags >> 1
+
+    // --- Compound bitwise assignment ---
+    flags &= mask
+    flags |= mask
+    flags ^= mask
+    flags <<= 1
+    flags >>= 1
+
+    // --- Comparison ---
+    if x > 0 && x < 100 {
+        fmt.Println("in range")
+    }
+
+    if !g || x == 0 {
+        fmt.Println("condition")
+    }
+
+    if v1.X != v2.X || v1.Y <= v2.Y {
+        fmt.Println("not equal")
+    }
+
+    // --- Pointer operations ---
+    px := &x
+    val := *px
+    *px = 99
+
+    // --- Nil pointer ---
+    ptr *int
+    if ptr != nil {
+        fmt.Println(*ptr)
+    }
+
+    // --- Panic and recover ---
+    defer fn() {
+        if r := recover(); r != nil {
+            fmt.Println("recovered from panic:", r)
+        }
+    }()
+    panic("something went wrong")
+
+    // --- Method on entity (standalone call) ---
+    TakeDamage(entity, 10)
+
+    // --- Method on entity (dot notation) ---
+    entity.TakeDamage(10)
+}

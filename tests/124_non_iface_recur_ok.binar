@@ -1,0 +1,14 @@
+// exit: 5
+// Test: non-interface recursion should work unchanged
+// Fib(5) = 5 (Fibonacci)
+
+fn Fib(n int) int {
+    if n <= 1 {
+        return n
+    }
+    return Fib(n - 1) + Fib(n - 2)
+}
+
+fn main() int {
+    return Fib(5)
+}

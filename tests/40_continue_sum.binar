@@ -1,0 +1,11 @@
+// exit: 42
+fn main() int {
+    x := 0
+    for i := 0; i < 10; i = i + 1 {
+        if i == 3 {
+            continue
+        }
+        x = x + i
+    }
+    return x
+}

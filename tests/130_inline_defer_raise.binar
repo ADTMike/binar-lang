@@ -1,0 +1,29 @@
+// exit: 0
+// Test: defer inside inlined function with raise executes before return
+
+type Myerr {
+    code int
+}
+
+fn store(addr *int, val int) {
+    *addr = val
+}
+
+fn get_error(flag *int) error {
+    defer store(flag, 99)
+    return Myerr{code: 1}
+}
+
+fn caller(flag *int) int {
+    get_error(flag) raise
+    return 0
+}
+
+fn main() int {
+    flag := 0
+    caller(&flag)
+    if flag != 99 {
+        return 1
+    }
+    return 0
+}

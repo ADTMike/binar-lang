@@ -1,0 +1,9 @@
+// exit: 3
+fn Divmod(a int, b int) (int, int) {
+    return a / b, a % b
+}
+
+fn main() int {
+    q, r := Divmod(17, 5)
+    return q
+}

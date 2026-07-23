@@ -1,0 +1,7 @@
+// exit: 0
+const N = 3
+
+fn main() int {
+    arr int
+    return 0
+}

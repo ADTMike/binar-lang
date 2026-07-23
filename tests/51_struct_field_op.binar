@@ -1,0 +1,11 @@
+// exit: 2
+type Pair {
+    a int
+    b int
+}
+
+fn main() int {
+    p := Pair{ a: 10, b: 5 }
+    p.a = p.a / p.b
+    return p.a
+}

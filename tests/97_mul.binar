@@ -1,0 +1,6 @@
+// exit: 6
+fn main() int {
+    a := 2
+    b := 3
+    return a * b
+}

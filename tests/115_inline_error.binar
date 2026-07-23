@@ -1,0 +1,19 @@
+// exit: 0
+// Test basic error inline: function returning error is inlined at call site
+
+type Myerr {
+    code int
+}
+
+fn get_error() error {
+    return Myerr{code: 42}
+}
+
+fn caller() int {
+    get_error() raise
+    return 0
+}
+
+fn main() int {
+    return 0
+}

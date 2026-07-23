@@ -1,0 +1,6 @@
+// exit: 10
+fn main() int {
+    x := 1_000_000
+    y := 999_990
+    return x - y
+}

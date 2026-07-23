@@ -1,0 +1,24 @@
+// exit: 0
+// Test: defer inside inlined function without explicit return executes on fall-through
+
+type Myerr {
+    code int
+}
+
+fn store(addr *int, val int) {
+    *addr = val
+}
+
+fn noop(flag *int) error {
+    defer store(flag, 77)
+    // no explicit return — falls through
+}
+
+fn main() int {
+    flag := 0
+    noop(&flag)
+    if flag != 77 {
+        return 1
+    }
+    return 0
+}
