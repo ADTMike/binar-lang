@@ -14,7 +14,7 @@ The core design principle is **zero-cost abstractions for error handling**: func
 
 - **Static typing** with structs, interfaces, pointers, arrays, slices, and fixed-width integers
 - **Interface system** with Go-like structural typing (no `implements` keyword)
-- **Zero-cost error abstraction** — error-returning functions are inlined, not called
+- **Zero-cost error abstraction** — interface-returning functions are inlined, not called
 - **`raise` keyword** for ergonomic error propagation
 - **`defer`** for cleanup with LIFO ordering
 - **Module system** with per-package visibility (uppercase = exported)
@@ -22,6 +22,103 @@ The core design principle is **zero-cost abstractions for error handling**: func
 - **Method syntax** — dot notation as sugar for first-parameter functions
 - **Inline assembly** with GCC-style constraints
 - **Pointer arithmetic**
+
+## Module System
+
+binar uses a Go-inspired module and import system with directory-based packages.
+
+### Module Declaration
+
+Every project that uses imports needs a `binar.mod` file at the root:
+
+```
+module myproject
+require "dep" => "../dep"
+```
+
+- `module <name>` — declares the module identity (mandatory for imports)
+- `require "<id>" => "<path>"` — declares a dependency; `<id>` is used as import prefix, `<path>` is relative to the module root
+
+### Import Syntax
+
+**Cross-package** — import a specific file from another package:
+
+```binar
+import { math } from "myproject/math"
+result := math.Add(7, 8)
+```
+
+**Same-package** — import another file in the same directory (forbids `from`):
+
+```binar
+import { a }
+a.helper()
+```
+
+Same-package imports are **forbidden in the root file** (`main.binar`). Only files within sub-packages can use them.
+
+**Multiple imports:**
+
+```binar
+import { math, util } from "myproject"
+```
+
+Each name maps to `name.binar` in the resolved package directory.
+
+### Multi-File Packages
+
+A directory is a package. All `.binar` files in the same directory share a namespace:
+
+```
+mypkg/
+    a.binar      # fn Add(a int, b int) int { ... }
+    b.binar      # import { a }  (same-package, no from)
+                 # fn Calc(x int) int { return a.Add(x, 1) }
+```
+
+```binar
+// main.binar — cross-package import
+import { b } from "myproject/mypkg"
+b.Calc(5)
+```
+
+### Visibility
+
+Go-style visibility based on the first letter of the function name:
+
+- **Uppercase** (`Add`, `Process`) — exported, callable from any package
+- **Lowercase** (`helper`, `internal`) — private, callable only within the same package
+
+```binar
+// mypkg/a.binar
+fn Add(a int, b int) int { return a + b }     // public
+fn helper(x int) int { return x }              // private
+
+// main.binar
+import { a } from "myproject/mypkg"
+a.Add(1, 2)     // OK — exported
+a.helper(1)     // ERROR — unexported function
+```
+
+### Standard Library
+
+Built-in packages live in `$BINAR_HOME/std/` and are imported by bare name:
+
+```binar
+import { fmt } from "fmt"
+fmt.Println("hello")
+```
+
+Available packages:
+- `fmt` — `Print(s string)`, `Println(s string)` (via raw syscalls)
+- `mem` — `Arena` struct, `NewArenaAllocator()`
+
+### Resolution Algorithm
+
+1. Walk up from the input file looking for `binar.mod` → module root
+2. For each import path, resolve in order: required dependencies (longest prefix match) → self-module → `$BINAR_HOME/std/`
+3. Files are compiled **lazily** — only when their exports are actually called
+4. Each file is parsed and compiled at most once (deduplication)
 
 ## Error Type Design
 
@@ -32,22 +129,57 @@ The error handling model is the central innovation of binar. It splits based on 
 | Interface as **parameter** | Monomorphization | Compiler generates specialized versions for each concrete type |
 | Interface as **return** | **Inline** | Function body is inlined at the call site; the function is never compiled as a standalone LLVM function |
 
-This means:
+**This applies to ALL interface returns, not just `error`.** The `error` type is itself an interface — but any user-defined interface returned from a function is inlined the same way:
 
 ```binar
-type Myerr { code int }
-
-fn get_error() error {
-    return Myerr{code: 42}
+iface Logger {
+    fn Log(Logger)
 }
 
-fn caller() int {
-    get_error() raise    // body of get_error is inlined here
-    return 0             // only reached if no error
+fn get_logger() Logger {
+    return ConsoleLogger{}
+}
+
+fn main() int {
+    l := get_logger()   // body of get_logger is inlined here
+    l.Log()
+    return 0
 }
 ```
 
-The `error` type is itself an interface. Any struct can be returned as an error value. At the call site, the compiler inlines the function body and checks the return value — if non-nil, it propagates via `raise`.
+### Propagation vs Handling
+
+When an interface-returning function is called, you have two options:
+
+**Propagation** — use `raise` to bubble the error up to the caller:
+
+```binar
+type FileErr { msg string }
+
+fn open(name string) error {
+    if name == "" {
+        return FileErr{msg: "empty name"}
+    }
+    return nil
+}
+
+fn caller() int {
+    open("test") raise          // propagates error to caller's caller
+    return 0                    // only reached if no error
+}
+```
+
+**Handling** — capture the error value and inspect it:
+
+```binar
+fn handler() int {
+    err := open("missing")
+    if err != 0 {
+        return 1                // handle error
+    }
+    return 0                    // success path
+}
+```
 
 ### Raise Syntax Rules
 
@@ -107,17 +239,17 @@ fn main() int {
 
 ```binar
 type Vec2 {
-    X float
-    Y float
+    X int
+    Y int
 }
 
 // Method on *Vec2 (dot notation sugar)
-fn Length(v *Vec2) float {
+fn Length(v *Vec2) int {
     return (v.X * v.X + v.Y * v.Y)
 }
 
 fn main() int {
-    v := Vec2{ X: 3.0, Y: 4.0 }
+    v := Vec2{ X: 3, Y: 4 }
     len := v.Length()    // sugar for Length(&v)
     return 0
 }
@@ -136,27 +268,9 @@ fn Process(l Logger) {
     l.Log()
 }
 
-type Console struct {}
+type Console {}
+
 fn Log(c Console) { ... }  // Console satisfies Logger automatically
-```
-
-### Error Handling
-
-```binar
-type FileErr { msg string }
-
-fn open(name string) error {
-    if name == "" {
-        return FileErr{msg: "empty name"}
-    }
-    return nil  // success
-}
-
-fn main() int {
-    open("test") raise          // propagates error
-    open("") raise              // propagates FileErr
-    return 0
-}
 ```
 
 ### Defer
@@ -173,27 +287,15 @@ fn process_or_fail(flag *int) {
 }
 ```
 
-### Modules
-
-```
-mypkg/
-  binar.mod       # module mypkg
-  math.binar      # fn Add(a, b int) int { ... }
-  util.binar      # import { math }
-```
-
-```binar
-import { math } from "mypkg/math"
-result := math.Add(7, 8)
-```
-
 ### Constants
 
 ```binar
 const N = 100
 const GRID_SIZE = 4
 
-type Grid { cells [GRID_SIZE][GRID_SIZE]int }
+type Grid {
+    cells [GRID_SIZE][GRID_SIZE]int
+}
 ```
 
 ### Inline Assembly
@@ -271,9 +373,9 @@ The test runner compiles each `.binar` file, links it, and checks the exit code.
 | Primitives | `int`, `float`, `bool`, `string`, `char`, `error` |
 | Fixed-width | `u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, `i64` |
 | Pointers | `*int`, `*MyType` |
-| Arrays | `[5]int`, `[N][N]float` |
+| Arrays | `[5]int`, `[N][N]int` |
 | Slices | `[]int`, `[]byte` |
-| Structs | `type Point { X int, Y int }` |
+| Structs | `type Point { X int; Y int }` (fields on separate lines) |
 | Interfaces | `iface Reader { fn Read(Reader) int }` |
 
 ## Known Limitations
