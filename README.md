@@ -1,6 +1,6 @@
 # binar
 
-A systems programming language with Go-Rust-Odin-Zig-inspired syntax and **zero-cost error abstraction**, compiled to native code via LLVM.
+A 100% vibcoded systems programming language with Go-Rust-Odin-Zig-inspired syntax and **zero-cost error abstraction**, compiled to native code via LLVM.
 
 **Status**: v0.1.0 — early development. 131 tests, 126 passing.
 
@@ -295,11 +295,9 @@ The test runner compiles each `.binar` file, links it, and checks the exit code.
 - Slice type with length + capacity
 - Range-based for loop
 - Default parameters and variadic functions
-- Operator overloading
 - Build tooling (`binar build`, `binar run`, `binar test`)
 - Dead code elimination and optimization passes
 - LSP support
-- WASM backend
 - Windows/macOS support
 
 ## License
