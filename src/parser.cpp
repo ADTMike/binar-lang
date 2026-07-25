@@ -134,19 +134,8 @@ Decl Parser::parse_fn_decl() {
     }
     expect(TokenType::RPAREN, "expected ')'");
 
-    // Return types: (int, int) or int or nothing
-    if (check(TokenType::LPAREN)) {
-        // Multiple returns without arrow: (int, int)
-        advance(); // consume '('
-        while (!check(TokenType::RPAREN) && !check(TokenType::EOF_TOKEN)) {
-            decl.fn.return_types.push_back(parse_type());
-            if (!check(TokenType::RPAREN)) {
-                expect(TokenType::COMMA, "expected ',' or ')'");
-            }
-        }
-        expect(TokenType::RPAREN, "expected ')'");
-    } else if (!check(TokenType::LBRACE)) {
-        // Single return type without arrow: fn Add(a int, b int) int
+    // Return types: nothing, T, error, or T, error
+    if (!check(TokenType::LBRACE) && !check(TokenType::EOF_TOKEN)) {
         if (check(TokenType::TYPE_INT) || check(TokenType::TYPE_FLOAT) ||
             check(TokenType::TYPE_BOOL) || check(TokenType::TYPE_STRING) ||
             check(TokenType::TYPE_CHAR) || check(TokenType::TYPE_ERROR) ||
@@ -157,6 +146,10 @@ Decl Parser::parse_fn_decl() {
             check(TokenType::STAR) ||
             check(TokenType::IDENT)) {
             decl.fn.return_types.push_back(parse_type());
+            if (check(TokenType::COMMA)) {
+                advance(); // consume ','
+                decl.fn.return_types.push_back(parse_type());
+            }
         }
     }
 

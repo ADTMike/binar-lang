@@ -1,5 +1,5 @@
 // exit: 255
-fn main() int {
+fn main() {
     x := 0xFF
-    return x
+    os.Exit(x)
 }

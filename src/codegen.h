@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ast.h"
+#include "config.h"
 #include <string>
 #include <memory>
 
@@ -10,7 +11,7 @@ class CodegenImpl;
 
 class Codegen {
 public:
-    Codegen();
+    explicit Codegen(const CompilerConfig& cfg = CompilerConfig::default_config());
     ~Codegen();
 
     bool generate(Program& program, const std::string& filename);

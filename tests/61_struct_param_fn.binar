@@ -8,7 +8,7 @@ fn Area(r Rect) int {
     return r.w * r.h
 }
 
-fn main() int {
+fn main() {
     r := Rect{ w: 3, h: 4 }
-    return Area(r) - 5
+    os.Exit(Area(r) - 5)
 }

@@ -21,7 +21,7 @@ fn Compute(l Logger) int {
     return v + 50
 }
 
-fn main() int {
+fn main() {
     z := ZapLogger{X: 10}
-    return Compute(z)
+    os.Exit(Compute(z))
 }

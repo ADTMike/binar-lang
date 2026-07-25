@@ -8,7 +8,7 @@ fn Distance(self *Vec2) int {
     return self.x + self.y
 }
 
-fn main() int {
+fn main() {
     v := Vec2{ x: 7, y: 8 }
-    return v.Distance()
+    os.Exit(v.Distance())
 }

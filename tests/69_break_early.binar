@@ -1,11 +1,11 @@
 // exit: 42
-fn main() int {
+fn main() {
     x := 0
     for i := 0; i < 100; i = i + 1 {
         x = x + 1
         if x == 42 {
-            return x
+            os.Exit(x)
         }
     }
-    return 0
+    os.Exit(0)
 }

@@ -5,6 +5,10 @@ type Myerr {
     code int
 }
 
+fn Error(e Myerr) string {
+    return "error"
+}
+
 fn store(addr *int, val int) {
     *addr = val
 }
@@ -14,14 +18,14 @@ fn get_value(flag *int) error {
     return nil
 }
 
-fn main() int {
+fn main() {
     flag := 0
     err := get_value(&flag)
-    if err != 0 {
-        return 1
+    if err != nil {
+        os.Exit(1)
     }
     if flag != 42 {
-        return 2
+        os.Exit(2)
     }
-    return 0
+    os.Exit(0)
 }

@@ -6,6 +6,6 @@ fn Max(a int, b int) int {
     return b
 }
 
-fn main() int {
-    return Max(3, 5)
+fn main() {
+    os.Exit(Max(3, 5))
 }

@@ -1,19 +1,25 @@
 // exit: 15
-// Test tail recursion with accumulator: sum(5, 0) = 0+1+2+3+4 = 10... actually let's do 1+2+3+4+5 = 15
+// Test tail recursion with accumulator: sum(5, 0) = 1+2+3+4+5 = 15
+// Uses pointer param to store result since error is now an interface type
 
-fn sum(n int, acc int) error {
-    if n <= 0 {
-        return acc
-    }
-    return sum(n - 1, acc + n)
+type SumErr {
+    code int
 }
 
-fn main() int {
-    err := sum(5, 0)
-    // err is the sum value converted to i64
-    // For success, err == 15 (which is non-zero)
-    if err == 15 {
-        return 15
+fn Error(e SumErr) string {
+    return "sum"
+}
+
+fn sum(n int, acc int, result *int) error {
+    if n <= 0 {
+        *result = acc
+        return SumErr{code: acc}
     }
-    return 1
+    return sum(n - 1, acc + n, result)
+}
+
+fn main() {
+    result := 0
+    sum(5, 0, &result)
+    os.Exit(result)
 }

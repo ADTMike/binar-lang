@@ -5,6 +5,10 @@ type Myerr {
     code int
 }
 
+fn Error(e Myerr) string {
+    return "error"
+}
+
 fn store(addr *int, val int) {
     *addr = val
 }
@@ -14,11 +18,11 @@ fn noop(flag *int) error {
     // no explicit return — falls through
 }
 
-fn main() int {
+fn main() {
     flag := 0
     noop(&flag)
     if flag != 77 {
-        return 1
+        os.Exit(1)
     }
-    return 0
+    os.Exit(0)
 }

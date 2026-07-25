@@ -1,10 +1,10 @@
 // exit: 10
-fn main() int {
+fn main() {
     x := 5
     if x > 3 {
         if x > 4 {
-            return 10
+            os.Exit(10)
         }
     }
-    return 0
+    os.Exit(0)
 }

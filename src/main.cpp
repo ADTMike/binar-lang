@@ -2,6 +2,7 @@
 #include "parser.h"
 #include "sema.h"
 #include "codegen.h"
+#include "config.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -18,6 +19,9 @@ void print_usage(const char* prog) {
     std::cerr << "  -ir          Print LLVM IR instead of compiling" << std::endl;
     std::cerr << "  -tokens      Print tokens and exit" << std::endl;
     std::cerr << "  -ast         Print AST and exit" << std::endl;
+    std::cerr << "  --target <triple>  Target triple (e.g., x86_64-unknown-linux-gnu)" << std::endl;
+    std::cerr << "  --int-width <bits>  Integer width in bits (default: 64)" << std::endl;
+    std::cerr << "  --print-config  Print default config and exit" << std::endl;
     std::cerr << "  -h, --help   Show this help message" << std::endl;
 }
 
@@ -192,13 +196,14 @@ struct ParsedFile {
 ParsedFile parse_binar_file(const std::string& file_path,
                             const std::string& logical_pkg,
                             const std::string& resolved_pkg,
-                            const std::string& file_basename) {
+                            const std::string& file_basename,
+                            const binar::CompilerConfig& cfg) {
     std::string src = read_file(file_path);
     binar::Lexer lex(src, file_path);
     auto toks = lex.tokenize();
     binar::Parser par(toks, file_path);
     binar::Program prog = par.parse();
-    binar::Sema sema;
+    binar::Sema sema(cfg);
     if (!sema.analyze(prog)) {
         for (const auto& err : sema.errors()) {
             std::cerr << file_path << ":" << err.line << ":" << err.column
@@ -216,7 +221,8 @@ void process_imports(const std::string& parent_logical,
                      std::vector<ParsedFile>& all_files,
                      std::set<std::string>& seen_paths,
                      const Module& mod,
-                     bool is_root) {
+                     bool is_root,
+                     const binar::CompilerConfig& cfg) {
     for (auto& decl : prog.decls) {
         if (decl.kind != binar::DeclKind::IMPORT) continue;
         for (auto& binding : decl.import_block.bindings) {
@@ -252,11 +258,11 @@ void process_imports(const std::string& parent_logical,
             }
 
             all_files.push_back(
-                parse_binar_file(file_path, logical_pkg, resolved_pkg, binding.name));
+                parse_binar_file(file_path, logical_pkg, resolved_pkg, binding.name, cfg));
 
             // Recurse: process imports using the file's module context
             process_imports(logical_pkg, resolved_pkg, all_files.back().program,
-                           all_files, seen_paths, *file_mod, false);
+                           all_files, seen_paths, *file_mod, false, cfg);
         }
     }
 }
@@ -267,6 +273,9 @@ int main(int argc, char* argv[]) {
     bool emit_ir = false;
     bool dump_tokens = false;
     bool dump_ast = false;
+    bool print_config = false;
+    std::string target_triple;
+    int int_width = 64;
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -278,6 +287,12 @@ int main(int argc, char* argv[]) {
             dump_tokens = true;
         } else if (arg == "-ast") {
             dump_ast = true;
+        } else if (arg == "--target" && i + 1 < argc) {
+            target_triple = argv[++i];
+        } else if (arg == "--int-width" && i + 1 < argc) {
+            int_width = std::stoi(argv[++i]);
+        } else if (arg == "--print-config") {
+            print_config = true;
         } else if (arg == "-h" || arg == "--help") {
             print_usage(argv[0]);
             return 0;
@@ -290,11 +305,37 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    if (print_config) {
+        binar::CompilerConfig cfg = target_triple.empty()
+            ? binar::CompilerConfig::default_config()
+            : binar::CompilerConfig::from_triple(target_triple);
+        cfg.types.int_width = int_width;
+        std::cout << "arch: " << (cfg.arch == binar::TargetArch::X86_64 ? "x86_64" :
+                                   cfg.arch == binar::TargetArch::AARCH64 ? "aarch64" : "wasm") << std::endl;
+        std::cout << "os: " << (cfg.os == binar::TargetOS::LINUX ? "linux" :
+                                cfg.os == binar::TargetOS::MACOS ? "macos" :
+                                cfg.os == binar::TargetOS::WINDOWS ? "windows" : "wasm") << std::endl;
+        std::cout << "target_triple: " << cfg.target_triple << std::endl;
+        std::cout << "cpu: " << cfg.cpu << std::endl;
+        std::cout << "int_width: " << cfg.types.int_width << std::endl;
+        std::cout << "float_width: " << cfg.types.float_width << std::endl;
+        std::cout << "pointer_width: " << cfg.types.pointer_width << std::endl;
+        std::cout << "entry_symbol: " << cfg.entry_point.symbol << std::endl;
+        std::cout << "module_marker: " << cfg.module.marker_file << std::endl;
+        return 0;
+    }
+
     if (input.empty()) {
         std::cerr << "error: no input file" << std::endl;
         print_usage(argv[0]);
         return 1;
     }
+
+    // Build config
+    binar::CompilerConfig cfg = target_triple.empty()
+        ? binar::CompilerConfig::default_config()
+        : binar::CompilerConfig::from_triple(target_triple);
+    cfg.types.int_width = int_width;
 
     Module mod = find_module_root(std::filesystem::path(input).parent_path().string());
 
@@ -317,7 +358,7 @@ int main(int argc, char* argv[]) {
 
     // Sema main file
     {
-        binar::Sema sema;
+        binar::Sema sema(cfg);
         if (!sema.analyze(main_program)) {
             for (const auto& err : sema.errors()) {
                 std::cerr << input << ":" << err.line << ":" << err.column
@@ -342,10 +383,10 @@ int main(int argc, char* argv[]) {
     std::set<std::string> seen_paths;
     seen_paths.insert(input);
 
-    process_imports("", "", main_program, all_files, seen_paths, mod, true);
+    process_imports("", "", main_program, all_files, seen_paths, mod, true, cfg);
 
     // Code generation
-    binar::Codegen codegen;
+    binar::Codegen codegen(cfg);
 
     // Register pending package files with logical paths (matching import syntax)
     for (auto& pf : all_files) {

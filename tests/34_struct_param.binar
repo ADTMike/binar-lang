@@ -8,9 +8,9 @@ fn AddVec(a Vec2, b Vec2) Vec2 {
     return Vec2{ x: a.x + b.x, y: a.y + b.y }
 }
 
-fn main() int {
+fn main() {
     a := Vec2{ x: 1, y: 2 }
     b := Vec2{ x: 3, y: 4 }
     c := AddVec(a, b)
-    return c.x + c.y
+    os.Exit(c.x + c.y)
 }

@@ -5,6 +5,10 @@ type Myerr {
     code int
 }
 
+fn Error(e Myerr) string {
+    return "error"
+}
+
 fn source() error {
     return Myerr{code: 2}
 }
@@ -14,10 +18,10 @@ fn middle() error {
     return err
 }
 
-fn main() int {
+fn main() {
     err := middle()
-    if err != 0 {
-        return 2
+    if err != nil {
+        os.Exit(2)
     }
-    return 0
+    os.Exit(0)
 }

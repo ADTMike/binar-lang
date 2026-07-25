@@ -1,9 +1,9 @@
 // exit: 3
-fn Divmod(a int, b int) (int, int) {
-    return a / b, a % b
+fn Divmod(a int, b int) int, error {
+    return a / b, nil
 }
 
-fn main() int {
-    q, r := Divmod(17, 5)
-    return q
+fn main() {
+    q, _ := Divmod(17, 5)
+    os.Exit(q)
 }

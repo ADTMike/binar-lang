@@ -1,4 +1,5 @@
 #include "codegen.h"
+#include "config.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/IRBuilder.h"
@@ -82,6 +83,7 @@ public:
     llvm::BasicBlock* inlining_exit_bb_ = nullptr;  // block to branch to on return during inlining
     llvm::AllocaInst* inlining_ret_alloca_ = nullptr;  // alloca for storing return value during non-raise inlining
     bool current_stmt_raise_ = false;  // set by gen_stmt when processing a raise expression
+    std::string last_inlined_concrete_type_;  // concrete type from most recent inlined call
 
     std::vector<std::string> errors_;
 
@@ -91,16 +93,22 @@ public:
 
     bool has_errors() const { return !errors_.empty(); }
 
-    CodegenImpl() : current_fn_(nullptr) {
+    CompilerConfig config_;
+
+    explicit CodegenImpl(const CompilerConfig& cfg = CompilerConfig::default_config())
+        : current_fn_(nullptr), config_(cfg) {
         context_ = std::make_unique<llvm::LLVMContext>();
         module_ = std::make_unique<llvm::Module>("binar", *context_);
         builder_ = std::make_unique<llvm::IRBuilder<>>(*context_);
 
-        LLVMInitializeX86TargetInfo();
-        LLVMInitializeX86Target();
-        LLVMInitializeX86TargetMC();
-        LLVMInitializeX86AsmParser();
-        LLVMInitializeX86AsmPrinter();
+        if (config_.target_init.x86) {
+            LLVMInitializeX86TargetInfo();
+            LLVMInitializeX86Target();
+            LLVMInitializeX86TargetMC();
+            LLVMInitializeX86AsmParser();
+            LLVMInitializeX86AsmPrinter();
+        }
+        // AArch64 init requires linking armcodegen/armasmparser libs
     }
 
     void gen_decl(Decl& decl);
@@ -121,10 +129,11 @@ public:
     std::string infer_concrete_type(Expr* arg_expr);
     void emit_raise_check(llvm::Value* result);
     void emit_deferred();
+    void emit_exit_code(llvm::Value* code);
     llvm::Value* gen_inline_call(FnDecl& fn, std::vector<llvm::Value*>& args, bool is_raise);
 };
 
-Codegen::Codegen() : impl_(std::make_unique<CodegenImpl>()) {}
+Codegen::Codegen(const CompilerConfig& cfg) : impl_(std::make_unique<CodegenImpl>(cfg)) {}
 Codegen::~Codegen() = default;
 
 bool Codegen::generate(Program& program, const std::string& filename) {
@@ -165,7 +174,9 @@ void Codegen::register_pending_file(const std::string& package_name,
 }
 
 bool Codegen::emit_object(const std::string& output) {
-    auto target_triple = llvm::sys::getDefaultTargetTriple();
+    std::string target_triple = impl_->config_.target_triple.empty()
+        ? llvm::sys::getDefaultTargetTriple()
+        : impl_->config_.target_triple;
     impl_->module_->setTargetTriple(llvm::Triple(target_triple));
 
     std::string error;
@@ -177,7 +188,7 @@ bool Codegen::emit_object(const std::string& output) {
 
     llvm::TargetOptions options;
     auto* target_machine = target->createTargetMachine(
-        llvm::Triple(target_triple), "generic", "", options, llvm::Reloc::PIC_);
+        llvm::Triple(target_triple), impl_->config_.cpu, "", options, llvm::Reloc::PIC_);
 
     impl_->module_->setDataLayout(target_machine->createDataLayout());
 
@@ -266,9 +277,11 @@ void CodegenImpl::gen_fn_decl(FnDecl& fn) {
         return;
     }
 
-    // Interface-returning functions are never emitted as standalone LLVM functions.
+    // Interface-returning functions with single return are never emitted as standalone LLVM functions.
     // Their body is inlined at every call site instead.
-    if (fn.is_interface_returning) {
+    // Multi-return interface functions are compiled normally.
+    // Exception: main() is always compiled normally since _start calls it directly.
+    if (fn.is_interface_returning && fn.return_types.size() == 1 && fn.name != "main") {
         iface_returning_decls_[fn.name] = &fn;
         return;
     }
@@ -346,6 +359,8 @@ void CodegenImpl::gen_fn_decl(FnDecl& fn) {
         } else if (is_multi_return) {
             // Return zeroed struct
             builder_->CreateRet(llvm::Constant::getNullValue(return_type));
+        } else if (return_type->isPointerTy()) {
+            builder_->CreateRet(llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(return_type)));
         } else {
             builder_->CreateRet(llvm::ConstantInt::get(*context_, llvm::APInt(64, 0)));
         }
@@ -578,8 +593,7 @@ std::string CodegenImpl::infer_concrete_type(Expr* arg_expr) {
     if (arg_expr->kind == ExprKind::IDENT) {
         auto it = named_struct_types_.find(arg_expr->ident);
         if (it != named_struct_types_.end()) {
-            std::string sname = it->second->getStructName().str();
-            if (sname.rfind("struct.", 0) == 0) sname = sname.substr(7);
+            std::string sname = strip_struct_prefix(it->second->getStructName().str());
             return sname;
         }
     }
@@ -587,8 +601,7 @@ std::string CodegenImpl::infer_concrete_type(Expr* arg_expr) {
         if (arg_expr->unary.operand->kind == ExprKind::IDENT) {
             auto it = named_struct_types_.find(arg_expr->unary.operand->ident);
             if (it != named_struct_types_.end()) {
-                std::string sname = it->second->getStructName().str();
-                if (sname.rfind("struct.", 0) == 0) sname = sname.substr(7);
+                std::string sname = strip_struct_prefix(it->second->getStructName().str());
                 return "*" + sname;
             }
         }
@@ -597,7 +610,7 @@ std::string CodegenImpl::infer_concrete_type(Expr* arg_expr) {
 }
 
 void CodegenImpl::gen_entry_point() {
-    if (module_->getFunction("_start")) return;
+    if (module_->getFunction(config_.entry_point.symbol.c_str())) return;
 
     llvm::Function* main_fn = module_->getFunction("main");
     if (!main_fn) return;
@@ -605,31 +618,32 @@ void CodegenImpl::gen_entry_point() {
     llvm::FunctionType* start_type = llvm::FunctionType::get(
         llvm::Type::getVoidTy(*context_), false);
     llvm::Function* start_fn = llvm::Function::Create(
-        start_type, llvm::Function::ExternalLinkage, "_start", module_.get());
+        start_type, llvm::Function::ExternalLinkage,
+        config_.entry_point.symbol, module_.get());
 
     llvm::BasicBlock* entry = llvm::BasicBlock::Create(*context_, "entry", start_fn);
     builder_->SetInsertPoint(entry);
 
-    llvm::Value* ret_code;
     if (main_fn->getReturnType()->isVoidTy()) {
         builder_->CreateCall(main_fn);
-        ret_code = llvm::ConstantInt::get(*context_, llvm::APInt(64, 0));
+        emit_exit_code(llvm::ConstantInt::get(*context_, llvm::APInt(64, 0)));
     } else {
-        ret_code = builder_->CreateCall(main_fn);
+        llvm::Value* ret = builder_->CreateCall(main_fn);
+        llvm::Value* is_nil = builder_->CreateICmpEQ(ret,
+            llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ret->getType())),
+            "main.is_nil");
+
+        llvm::BasicBlock* exit0_bb = llvm::BasicBlock::Create(*context_, "exit.0", start_fn);
+        llvm::BasicBlock* exit1_bb = llvm::BasicBlock::Create(*context_, "exit.1", start_fn);
+
+        builder_->CreateCondBr(is_nil, exit0_bb, exit1_bb);
+
+        builder_->SetInsertPoint(exit0_bb);
+        emit_exit_code(llvm::ConstantInt::get(*context_, llvm::APInt(64, 0)));
+
+        builder_->SetInsertPoint(exit1_bb);
+        emit_exit_code(llvm::ConstantInt::get(*context_, llvm::APInt(64, 1)));
     }
-
-    // Linux x86_64 exit syscall via inline asm
-    llvm::FunctionType* exit_type = llvm::FunctionType::get(
-        llvm::Type::getVoidTy(*context_),
-        {llvm::Type::getInt64Ty(*context_)}, false);
-    llvm::InlineAsm* exit_asm = llvm::InlineAsm::get(
-        exit_type,
-        "movq $$60, %rax\n\tmovq $0, %rdi\n\tsyscall",
-        "r,~{rax},~{rdi},~{rcx},~{r11}",
-        true);
-    builder_->CreateCall(exit_asm, {ret_code});
-
-    builder_->CreateUnreachable();
 }
 
 void CodegenImpl::emit_raise_check(llvm::Value* result) {
@@ -637,8 +651,14 @@ void CodegenImpl::emit_raise_check(llvm::Value* result) {
     unsigned n = sty->getNumElements();
     llvm::Value* err_val = builder_->CreateExtractValue(result, {n - 1}, "raise.err");
 
-    llvm::Value* is_err = builder_->CreateICmpNE(err_val,
-        llvm::ConstantInt::get(*context_, llvm::APInt(64, 0)), "raise.cond");
+    llvm::Value* is_err;
+    if (err_val->getType()->isPointerTy()) {
+        is_err = builder_->CreateICmpNE(err_val,
+            llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(err_val->getType())), "raise.cond");
+    } else {
+        is_err = builder_->CreateICmpNE(err_val,
+            llvm::ConstantInt::get(*context_, llvm::APInt(64, 0)), "raise.cond");
+    }
 
     llvm::Function* fn = builder_->GetInsertBlock()->getParent();
     llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(*context_, "raise.ret", fn);
@@ -670,6 +690,24 @@ void CodegenImpl::emit_deferred() {
     }
 }
 
+void CodegenImpl::emit_exit_code(llvm::Value* code) {
+    if (!code->getType()->isIntegerTy(64)) {
+        code = builder_->CreateIntCast(code, llvm::Type::getInt64Ty(*context_), true);
+    }
+    auto it = config_.syscall.calls.find("exit");
+    if (it == config_.syscall.calls.end()) return;
+    std::string asm_str = "movq $$" + std::to_string(it->second.number) + ", %rax\n\t"
+                        + "movq $0, %rdi\n\t"
+                        + config_.syscall.syscall_insn;
+    llvm::FunctionType* exit_type = llvm::FunctionType::get(
+        llvm::Type::getVoidTy(*context_),
+        {llvm::Type::getInt64Ty(*context_)}, false);
+    llvm::InlineAsm* exit_asm = llvm::InlineAsm::get(
+        exit_type, asm_str, "r," + it->second.clobbers, true);
+    builder_->CreateCall(exit_asm, {code});
+    builder_->CreateUnreachable();
+}
+
 llvm::Value* CodegenImpl::gen_inline_call(FnDecl& fn, std::vector<llvm::Value*>& args, bool is_raise) {
     // Save state
     auto saved_named_values = named_values_;
@@ -679,11 +717,12 @@ llvm::Value* CodegenImpl::gen_inline_call(FnDecl& fn, std::vector<llvm::Value*>&
     bool saved_inlining_raise = inlining_raise_;
     llvm::BasicBlock* saved_exit_bb = inlining_exit_bb_;
     llvm::AllocaInst* saved_ret_alloca = inlining_ret_alloca_;
+    std::string saved_concrete_type = last_inlined_concrete_type_;
     llvm::BasicBlock* resume_block = builder_->GetInsertBlock();
 
     // Create parameter allocas
     for (size_t i = 0; i < fn.params.size() && i < args.size(); i++) {
-        std::string pname = "__inline_" + fn.name + "_" + fn.params[i].name;
+        std::string pname = config_.constants.inline_prefix + fn.name + "_" + fn.params[i].name;
         llvm::Type* ptype = resolve_type(*fn.params[i].type);
         llvm::AllocaInst* alloca = builder_->CreateAlloca(ptype, nullptr, pname);
         builder_->CreateStore(args[i], alloca);
@@ -697,15 +736,11 @@ llvm::Value* CodegenImpl::gen_inline_call(FnDecl& fn, std::vector<llvm::Value*>&
 
     llvm::Function* caller_fn = builder_->GetInsertBlock()->getParent();
 
-    if (is_raise) {
-        // For raise: RETURN in inlined body → return from caller function
-        // We just let gen_stmt RETURN emit normally; it will return from the caller
-        // because current_fn_ is still the caller
-    } else {
-        // For non-raise: RETURN in inlined body → branch to exit block
-        llvm::BasicBlock* exit_bb = llvm::BasicBlock::Create(*context_, "inline.exit", caller_fn);
-        llvm::Type* error_type = llvm::Type::getInt64Ty(*context_); // error is i64
-        llvm::AllocaInst* ret_alloca = builder_->CreateAlloca(error_type, nullptr, "__inline_ret");
+    {
+        // Both raise and non-raise: RETURN in inlined body → branch to exit block
+        llvm::BasicBlock* exit_bb = llvm::BasicBlock::Create(*context_, is_raise ? "raise.exit" : "inline.exit", caller_fn);
+        llvm::Type* error_type = llvm::PointerType::get(*context_, 0); // error is i8*
+        llvm::AllocaInst* ret_alloca = builder_->CreateAlloca(error_type, nullptr, is_raise ? "__raise_ret" : "__inline_ret");
         inlining_exit_bb_ = exit_bb;
         inlining_ret_alloca_ = ret_alloca;
     }
@@ -717,17 +752,11 @@ llvm::Value* CodegenImpl::gen_inline_call(FnDecl& fn, std::vector<llvm::Value*>&
 
     // If inlined body didn't terminate (reached end without return), it's a success path
     if (!builder_->GetInsertBlock()->getTerminator()) {
-        if (is_raise) {
-            // Dead block after inline raise return or fall-through without return
-            emit_deferred();
-            new llvm::UnreachableInst(*context_, builder_->GetInsertBlock());
-        } else {
-            // Non-raise: store 0 (nil/success) and branch to exit
-            builder_->CreateStore(llvm::ConstantInt::get(*context_, llvm::APInt(64, 0)),
-                                  inlining_ret_alloca_);
-            emit_deferred();
-            builder_->CreateBr(inlining_exit_bb_);
-        }
+        // Store nil (success) and branch to exit
+        builder_->CreateStore(llvm::ConstantPointerNull::get(llvm::PointerType::get(*context_, 0)),
+                              inlining_ret_alloca_);
+        emit_deferred();
+        builder_->CreateBr(inlining_exit_bb_);
     }
 
     // Restore state
@@ -736,10 +765,39 @@ llvm::Value* CodegenImpl::gen_inline_call(FnDecl& fn, std::vector<llvm::Value*>&
     inlining_raise_ = saved_inlining_raise;
 
     llvm::Value* result = nullptr;
-    if (!is_raise && inlining_exit_bb_) {
+    if (inlining_exit_bb_) {
         // Position builder at exit block and load result
         builder_->SetInsertPoint(inlining_exit_bb_);
-        result = builder_->CreateLoad(llvm::Type::getInt64Ty(*context_), inlining_ret_alloca_, "__inline_ret_val");
+        llvm::Type* error_type = llvm::PointerType::get(*context_, 0);
+        result = builder_->CreateLoad(error_type, inlining_ret_alloca_, is_raise ? "__raise_ret_val" : "__inline_ret_val");
+
+        if (is_raise) {
+            // Raise: check if nil (success) or non-nil (error)
+            llvm::Value* is_nil = builder_->CreateICmpEQ(result,
+                llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(error_type)), "raise.is_nil");
+
+            llvm::BasicBlock* error_bb = llvm::BasicBlock::Create(*context_, "raise.error", caller_fn);
+            llvm::BasicBlock* cont_bb = llvm::BasicBlock::Create(*context_, "raise.cont", caller_fn);
+
+            builder_->CreateCondBr(is_nil, cont_bb, error_bb);
+
+            // Error path: return the error from the containing function
+            builder_->SetInsertPoint(error_bb);
+            llvm::Type* fn_ret_type = caller_fn->getReturnType();
+            if (fn_ret_type->isVoidTy()) {
+                emit_exit_code(llvm::ConstantInt::get(*context_, llvm::APInt(64, 1)));
+            } else if (fn_ret_type->isPointerTy()) {
+                builder_->CreateRet(result);
+            } else if (fn_ret_type->isIntegerTy(64)) {
+                builder_->CreateRet(builder_->CreatePtrToInt(result, fn_ret_type));
+            } else {
+                builder_->CreateRet(llvm::ConstantInt::get(fn_ret_type, 1));
+            }
+
+            // Continue path: execution continues after the call
+            builder_->SetInsertPoint(cont_bb);
+            result = nullptr; // Don't return result to caller; execution continues
+        }
     }
 
     // Restore inlining context (exit block / ret alloca) for outer inline
@@ -778,6 +836,14 @@ void CodegenImpl::gen_stmt(Stmt& stmt) {
                             current_stmt_raise_ = assign.raise;
                             val = gen_expr(*assign.value);
                             current_stmt_raise_ = false;
+                            // Propagate concrete type from inlined call to variable
+                            if (!last_inlined_concrete_type_.empty()) {
+                                auto sit = struct_types_.find(last_inlined_concrete_type_);
+                                if (sit != struct_types_.end()) {
+                                    named_struct_types_[name] = sit->second;
+                                }
+                                last_inlined_concrete_type_.clear();
+                            }
                             if (val && assign.raise) {
                                 if (val->getType()->isStructTy()) {
                                     emit_raise_check(val);
@@ -811,14 +877,20 @@ void CodegenImpl::gen_stmt(Stmt& stmt) {
                                 }
                             }
                         } else {
-                            // Inlined raise already returned from function; create unreachable
-                            llvm::BasicBlock* unreachable = llvm::BasicBlock::Create(*context_, "unreachable.after.raise", current_fn_);
-                            builder_->SetInsertPoint(unreachable);
+                            // Inlined raise may continue at raise.cont; don't create unreachable
                         }
                     } else {
                         current_stmt_raise_ = assign.raise;
                         llvm::Value* val = gen_expr(*assign.value);
                         current_stmt_raise_ = false;
+                        // Propagate concrete type from inlined call to variable
+                        if (!last_inlined_concrete_type_.empty() && assign.target->kind == ExprKind::IDENT) {
+                            auto sit = struct_types_.find(last_inlined_concrete_type_);
+                            if (sit != struct_types_.end()) {
+                                named_struct_types_[assign.target->ident] = sit->second;
+                            }
+                            last_inlined_concrete_type_.clear();
+                        }
                         if (val && assign.raise) {
                             if (val->getType()->isStructTy()) {
                                 emit_raise_check(val);
@@ -873,8 +945,7 @@ void CodegenImpl::gen_stmt(Stmt& stmt) {
                             }
 
                             if (stype) {
-                                std::string struct_name = stype->getStructName().str();
-                                if (struct_name.rfind("struct.", 0) == 0) struct_name = struct_name.substr(7);
+                                std::string struct_name = strip_struct_prefix(stype->getStructName().str());
                                 auto fit = struct_fields_.find(struct_name);
                                 if (fit != struct_fields_.end()) {
                                     int field_idx = -1;
@@ -942,8 +1013,7 @@ void CodegenImpl::gen_stmt(Stmt& stmt) {
                         }
                     }
                     if (!result) {
-                        llvm::BasicBlock* unreachable = llvm::BasicBlock::Create(*context_, "unreachable.after.raise", current_fn_);
-                        builder_->SetInsertPoint(unreachable);
+                        // Inlined raise may continue at raise.cont; don't create unreachable
                     }
                 }
             }
@@ -954,21 +1024,39 @@ void CodegenImpl::gen_stmt(Stmt& stmt) {
                 // Non-raise inlining: RETURN → branch to exit block with value
                 if (!stmt.return_values.empty()) {
                     llvm::Value* val = gen_expr(*stmt.return_values[0]);
-                    // Store the return value (for error, it's the concrete error struct value)
-                    // For now, treat as i64
-                    if (val->getType()->isPointerTy()) {
-                        val = builder_->CreatePtrToInt(val, llvm::Type::getInt64Ty(*context_));
+                    // Capture concrete type from AST before bitcast to opaque pointer
+                    last_inlined_concrete_type_.clear();
+                    Expr* ret_expr = stmt.return_values[0].get();
+                    if (ret_expr->kind == ExprKind::STRUCT_LITERAL) {
+                        last_inlined_concrete_type_ = ret_expr->struct_literal.type_name;
+                    } else if (ret_expr->kind == ExprKind::IDENT) {
+                        auto sit = named_struct_types_.find(ret_expr->ident);
+                        if (sit != named_struct_types_.end()) {
+                            std::string sname = strip_struct_prefix(sit->second->getStructName().str());
+                            last_inlined_concrete_type_ = sname;
+                        }
                     }
+                    val = builder_->CreateBitCast(val, llvm::PointerType::get(*context_, 0));
                     builder_->CreateStore(val, inlining_ret_alloca_);
                 } else if (stmt.expr) {
                     llvm::Value* val = gen_expr(*stmt.expr);
-                    if (val->getType()->isPointerTy()) {
-                        val = builder_->CreatePtrToInt(val, llvm::Type::getInt64Ty(*context_));
+                    last_inlined_concrete_type_.clear();
+                    Expr* ret_expr = stmt.expr.get();
+                    if (ret_expr->kind == ExprKind::STRUCT_LITERAL) {
+                        last_inlined_concrete_type_ = ret_expr->struct_literal.type_name;
+                    } else if (ret_expr->kind == ExprKind::IDENT) {
+                        auto sit = named_struct_types_.find(ret_expr->ident);
+                        if (sit != named_struct_types_.end()) {
+                            std::string sname = strip_struct_prefix(sit->second->getStructName().str());
+                            last_inlined_concrete_type_ = sname;
+                        }
                     }
+                    val = builder_->CreateBitCast(val, llvm::PointerType::get(*context_, 0));
                     builder_->CreateStore(val, inlining_ret_alloca_);
                 } else {
                     // nil return
-                    builder_->CreateStore(llvm::ConstantInt::get(*context_, llvm::APInt(64, 0)),
+                    last_inlined_concrete_type_.clear();
+                    builder_->CreateStore(llvm::ConstantPointerNull::get(llvm::PointerType::get(*context_, 0)),
                                           inlining_ret_alloca_);
                 }
                 // Emit deferred calls before branching
@@ -980,26 +1068,48 @@ void CodegenImpl::gen_stmt(Stmt& stmt) {
                 break;
             }
             if (inlining_ && inlining_raise_) {
-                // Raise inlining: RETURN → return from caller function
-                // This is just a normal return since current_fn_ is the caller
+                // Raise inlining: RETURN → store value and branch to exit block
+                // (nil check happens after the inlined body in gen_inline_call)
                 if (!stmt.return_values.empty()) {
                     llvm::Value* val = gen_expr(*stmt.return_values[0]);
-                    if (val->getType()->isPointerTy()) {
-                        val = builder_->CreatePtrToInt(val, llvm::Type::getInt64Ty(*context_));
+                    // Capture concrete type from AST before bitcast to opaque pointer
+                    last_inlined_concrete_type_.clear();
+                    Expr* ret_expr = stmt.return_values[0].get();
+                    if (ret_expr->kind == ExprKind::STRUCT_LITERAL) {
+                        last_inlined_concrete_type_ = ret_expr->struct_literal.type_name;
+                    } else if (ret_expr->kind == ExprKind::IDENT) {
+                        auto sit = named_struct_types_.find(ret_expr->ident);
+                        if (sit != named_struct_types_.end()) {
+                            std::string sname = strip_struct_prefix(sit->second->getStructName().str());
+                            last_inlined_concrete_type_ = sname;
+                        }
                     }
-                    emit_deferred();
-                    builder_->CreateRet(val);
+                    val = builder_->CreateBitCast(val, llvm::PointerType::get(*context_, 0));
+                    builder_->CreateStore(val, inlining_ret_alloca_);
                 } else if (stmt.expr) {
                     llvm::Value* val = gen_expr(*stmt.expr);
-                    if (val->getType()->isPointerTy()) {
-                        val = builder_->CreatePtrToInt(val, llvm::Type::getInt64Ty(*context_));
+                    last_inlined_concrete_type_.clear();
+                    Expr* ret_expr = stmt.expr.get();
+                    if (ret_expr->kind == ExprKind::STRUCT_LITERAL) {
+                        last_inlined_concrete_type_ = ret_expr->struct_literal.type_name;
+                    } else if (ret_expr->kind == ExprKind::IDENT) {
+                        auto sit = named_struct_types_.find(ret_expr->ident);
+                        if (sit != named_struct_types_.end()) {
+                            std::string sname = strip_struct_prefix(sit->second->getStructName().str());
+                            last_inlined_concrete_type_ = sname;
+                        }
                     }
-                    emit_deferred();
-                    builder_->CreateRet(val);
+                    val = builder_->CreateBitCast(val, llvm::PointerType::get(*context_, 0));
+                    builder_->CreateStore(val, inlining_ret_alloca_);
                 } else {
-                    emit_deferred();
-                    builder_->CreateRet(llvm::ConstantInt::get(*context_, llvm::APInt(64, 0)));
+                    last_inlined_concrete_type_.clear();
+                    builder_->CreateStore(llvm::ConstantPointerNull::get(llvm::PointerType::get(*context_, 0)),
+                                          inlining_ret_alloca_);
                 }
+                // Emit deferred calls before branching
+                emit_deferred();
+                builder_->CreateBr(inlining_exit_bb_);
+                // Continue in unreachable block (statements after this return won't be reached)
                 llvm::BasicBlock* unreachable2 = llvm::BasicBlock::Create(*context_, "inline.unreachable", builder_->GetInsertBlock()->getParent());
                 builder_->SetInsertPoint(unreachable2);
                 break;
@@ -1010,11 +1120,13 @@ void CodegenImpl::gen_stmt(Stmt& stmt) {
                 llvm::Value* result = llvm::UndefValue::get(ret_type);
                 for (size_t i = 0; i < stmt.return_values.size(); i++) {
                     llvm::Value* val = gen_expr(*stmt.return_values[i]);
-                    // If return type expects a struct value but we have a pointer, load it
-                    llvm::Type* elem_type = ret_type->isStructTy() ? ret_type :
-                        (ret_type->isStructTy() ? ret_type : nullptr);
+                    // If we have a pointer but the element type is a struct value, load it
                     if (val->getType()->isPointerTy() && ret_type->isStructTy()) {
-                        val = builder_->CreateLoad(ret_type, val, "retload");
+                        llvm::StructType* sty = llvm::cast<llvm::StructType>(ret_type);
+                        llvm::Type* elem_type = sty->getElementType((unsigned)i);
+                        if (elem_type->isStructTy() && !llvm::isa<llvm::ConstantPointerNull>(val)) {
+                            val = builder_->CreateLoad(elem_type, val, "retload");
+                        }
                     }
                     result = builder_->CreateInsertValue(result, val, (unsigned)i);
                 }
@@ -1024,7 +1136,10 @@ void CodegenImpl::gen_stmt(Stmt& stmt) {
                 llvm::Value* val = gen_expr(*stmt.expr);
                 llvm::Type* ret_type = current_fn_->getReturnType();
                 // If return type is a struct value but we have a pointer, load it
-                if (val->getType()->isPointerTy() && ret_type->isStructTy()) {
+                // (but not for null pointers or pointer-typed returns)
+                if (val->getType()->isPointerTy() && ret_type->isStructTy() &&
+                    !llvm::isa<llvm::ConstantPointerNull>(val) &&
+                    !ret_type->isPointerTy()) {
                     val = builder_->CreateLoad(ret_type, val, "retload");
                 }
                 emit_deferred();
@@ -1379,6 +1494,19 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
 
                 if (expr.call.callee->dot.object->kind == ExprKind::IDENT) {
                     std::string first = expr.call.callee->dot.object->ident;
+
+                    // Built-in module functions (os.Exit)
+                    if (first == "os" && fn_name_bare == "Exit") {
+                        std::vector<llvm::Value*> exit_args;
+                        for (auto& arg : expr.call.args) {
+                            exit_args.push_back(gen_expr(*arg));
+                        }
+                        if (!exit_args.empty()) {
+                            emit_exit_code(exit_args[0]);
+                        }
+                        return nullptr;
+                    }
+
                     auto it = import_names_.find(first);
                     if (it != import_names_.end()) {
                         // Import binding found: file.fn pattern
@@ -1411,24 +1539,31 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
                     std::string str_val = expr.call.args[0]->string_val;
                     int str_len = (int)str_val.size();
 
-                    llvm::FunctionType* write_type = llvm::FunctionType::get(
-                        llvm::Type::getVoidTy(*context_),
-                        {llvm::PointerType::get(*context_, 0)}, false);
-                    llvm::InlineAsm* write_asm = llvm::InlineAsm::get(
-                        write_type,
-                        "movq $$1, %rax\n\tmovq $$1, %rdi\n\tmovq $0, %rsi\n\tmovq $$" + std::to_string(str_len) + ", %rdx\n\tsyscall",
-                        "r,~{rax},~{rdi},~{rcx},~{r11}",
-                        true);
-                    builder_->CreateCall(write_asm, {args[0]});
+                    auto write_it = config_.syscall.calls.find("write");
+                    if (write_it != config_.syscall.calls.end()) {
+                        std::string asm_str = "movq $$" + std::to_string(write_it->second.number) + ", %rax\n\t"
+                                            + "movq $$1, %rdi\n\t"
+                                            + "movq $0, %rsi\n\t"
+                                            + "movq $$" + std::to_string(str_len) + ", %rdx\n\t"
+                                            + config_.syscall.syscall_insn;
+                        llvm::FunctionType* write_type = llvm::FunctionType::get(
+                            llvm::Type::getVoidTy(*context_),
+                            {llvm::PointerType::get(*context_, 0)}, false);
+                        llvm::InlineAsm* write_asm = llvm::InlineAsm::get(
+                            write_type, asm_str, "r," + write_it->second.clobbers, true);
+                        builder_->CreateCall(write_asm, {args[0]});
 
-                    if (fn_name_bare == "Println") {
-                        llvm::Value* nl_str = builder_->CreateGlobalString("\n");
-                        llvm::InlineAsm* nl_asm = llvm::InlineAsm::get(
-                            write_type,
-                            "movq $$1, %rax\n\tmovq $$1, %rdi\n\tmovq $0, %rsi\n\tmovq $$1, %rdx\n\tsyscall",
-                            "r,~{rax},~{rdi},~{rcx},~{r11}",
-                            true);
-                        builder_->CreateCall(nl_asm, {nl_str});
+                        if (fn_name_bare == "Println") {
+                            llvm::Value* nl_str = builder_->CreateGlobalString("\n");
+                            std::string nl_asm_str = "movq $$" + std::to_string(write_it->second.number) + ", %rax\n\t"
+                                                   + "movq $$1, %rdi\n\t"
+                                                   + "movq $0, %rsi\n\t"
+                                                   + "movq $$1, %rdx\n\t"
+                                                   + config_.syscall.syscall_insn;
+                            llvm::InlineAsm* nl_asm = llvm::InlineAsm::get(
+                                write_type, nl_asm_str, "r," + write_it->second.clobbers, true);
+                            builder_->CreateCall(nl_asm, {nl_str});
+                        }
                     }
                     return nullptr;
                 }
@@ -1440,18 +1575,15 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
                 return llvm::ConstantInt::get(*context_, llvm::APInt(64, 0));
             }
 
-            // Interface-returning function: inline at call site
+            // Interface-returning function: inline at call site (single-return only)
             if (!fn_name_bare.empty()) {
                 auto iface_ret_it = iface_returning_decls_.find(fn_name_bare);
                 if (iface_ret_it != iface_returning_decls_.end()) {
-                    // Determine raise context: check if this CALL is inside a raise expression
-                    bool call_is_raise = false;
-                    // Walk up to find the parent statement's raise flag
-                    // For standalone raise: Stmt::raise on an EXPR containing this CALL
-                    // For assigned raise: AssignExpr::raise on a CALL value
-                    // We detect this from the stmt being processed (passed via flag)
-                    call_is_raise = current_stmt_raise_;
-                    return gen_inline_call(*iface_ret_it->second, args, call_is_raise);
+                    // Only inline single-return error functions; multi-return uses normal call path
+                    if (iface_ret_it->second->return_types.size() == 1) {
+                        bool call_is_raise = current_stmt_raise_;
+                        return gen_inline_call(*iface_ret_it->second, args, call_is_raise);
+                    }
                 }
             }
 
@@ -1485,6 +1617,23 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
             if (receiver && func->arg_size() > 0) {
                 llvm::Type* param_type = func->getArg(0)->getType();
                 llvm::Type* receiver_type = receiver->getType();
+
+                // If receiver is i8* (error type) and param expects a concrete struct type,
+                // bitcast i8* to the concrete struct pointer type first
+                if (receiver_type->isPointerTy() && param_type->isStructTy()) {
+                    std::string receiver_name;
+                    if (expr.call.callee->kind == ExprKind::DOT_ACCESS &&
+                        expr.call.callee->dot.object->kind == ExprKind::IDENT) {
+                        receiver_name = expr.call.callee->dot.object->ident;
+                    }
+                    if (!receiver_name.empty()) {
+                        llvm::StructType* stype = find_struct_type(receiver_name);
+                        if (stype) {
+                            receiver = builder_->CreateBitCast(receiver, llvm::PointerType::get(*context_, 0));
+                            receiver_type = receiver->getType();
+                        }
+                    }
+                }
 
                 if (!receiver_type->isPointerTy() && param_type->isPointerTy()) {
                     llvm::AllocaInst* alloca = builder_->CreateAlloca(receiver_type, nullptr, "methodtmp");
@@ -1542,8 +1691,7 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
             }
 
             if (stype) {
-                std::string struct_name = stype->getStructName().str();
-                if (struct_name.rfind("struct.", 0) == 0) struct_name = struct_name.substr(7);
+                std::string struct_name = strip_struct_prefix(stype->getStructName().str());
                 auto fit = struct_fields_.find(struct_name);
                 if (fit != struct_fields_.end()) {
                     int field_idx = -1;
@@ -1619,8 +1767,7 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
                 }
                 if (!obj) obj = gen_expr(*target->dot.object);
                 if (stype) {
-                    std::string struct_name = stype->getStructName().str();
-                    if (struct_name.rfind("struct.", 0) == 0) struct_name = struct_name.substr(7);
+                    std::string struct_name = strip_struct_prefix(stype->getStructName().str());
                     auto fit = struct_fields_.find(struct_name);
                     if (fit != struct_fields_.end()) {
                         int field_idx = -1;
@@ -1698,16 +1845,18 @@ llvm::Type* CodegenImpl::resolve_type(TypeAnnotation& type) {
             }
             if (type.name == "int" || type.name == "i32" || type.name == "i64" ||
                 type.name == "u8" || type.name == "u16" || type.name == "u32" || type.name == "u64")
-                return llvm::Type::getInt64Ty(*context_);
+                return llvm::Type::getIntNTy(*context_, config_.types.int_width);
             if (type.name == "float" || type.name == "f32" || type.name == "f64")
                 return llvm::Type::getDoubleTy(*context_);
             if (type.name == "bool")
-                return llvm::Type::getInt1Ty(*context_);
+                return llvm::Type::getIntNTy(*context_, config_.types.bool_width);
             if (type.name == "string")
                 return llvm::PointerType::get(*context_, 0);
             if (type.name == "char")
-                return llvm::Type::getInt8Ty(*context_);
-            return llvm::Type::getInt64Ty(*context_);
+                return llvm::Type::getIntNTy(*context_, config_.types.char_width);
+            if (type.name == "error")
+                return llvm::PointerType::get(*context_, 0);
+            return llvm::Type::getIntNTy(*context_, config_.types.int_width);
         }
         case TypeKind::POINTER:
         case TypeKind::SLICE:

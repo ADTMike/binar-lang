@@ -1,10 +1,10 @@
 // exit: 10
-fn main() int {
+fn main() {
     a := 0
     b := 0
     p := &a
     q := &b
     *p = 3
     *q = 7
-    return *p + *q
+    os.Exit(*p + *q)
 }

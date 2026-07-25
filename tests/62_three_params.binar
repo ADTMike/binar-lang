@@ -3,6 +3,6 @@ fn Sum(a int, b int, c int) int {
     return a + b + c
 }
 
-fn main() int {
-    return Sum(3, 5, 7)
+fn main() {
+    os.Exit(Sum(3, 5, 7))
 }

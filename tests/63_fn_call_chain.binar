@@ -7,6 +7,6 @@ fn Double(x int) int {
     return Identity(x) + Identity(x)
 }
 
-fn main() int {
-    return Double(21)
+fn main() {
+    os.Exit(Double(21))
 }

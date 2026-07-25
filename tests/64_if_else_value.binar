@@ -1,10 +1,10 @@
 // exit: 5
-fn main() int {
+fn main() {
     a := 3
     b := 7
     if a > b {
-        return a
+        os.Exit(a)
     } else {
-        return b - 2
+        os.Exit(b - 2)
     }
 }

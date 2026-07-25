@@ -17,8 +17,8 @@ fn Process(l Logger) int {
     return 0
 }
 
-fn main() int {
+fn main() {
     z := ZapLogger{X: 0}
     Process(z)
-    return z.X
+    os.Exit(z.X)
 }

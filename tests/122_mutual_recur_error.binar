@@ -11,6 +11,6 @@ fn b() error {
     return nil
 }
 
-fn main() int {
-    return 1
+fn main() {
+    os.Exit(1)
 }

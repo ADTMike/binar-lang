@@ -5,7 +5,11 @@ type Myerr {
     code int
 }
 
-fn div(a int, b int) (int, error) {
+fn Error(e Myerr) string {
+    return "error"
+}
+
+fn div(a int, b int) int, error {
     if b == 0 {
         return 0, Myerr{code: 1}
     }
@@ -17,6 +21,6 @@ fn caller() int {
     return 0
 }
 
-fn main() int {
-    return caller()
+fn main() {
+    os.Exit(caller())
 }

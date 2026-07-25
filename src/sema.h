@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ast.h"
+#include "config.h"
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -49,6 +50,7 @@ struct SemaError {
 
 class Sema {
 public:
+    explicit Sema(const CompilerConfig& cfg = CompilerConfig::default_config());
     bool analyze(Program& program);
     const std::vector<SemaError>& errors() const { return errors_; }
 
@@ -85,6 +87,12 @@ private:
     void check_raise_syntax(Program& program);
     int get_fn_return_count(const std::string& fn_name, Program& program);
     bool is_error_or_interface_type(const std::string& type_name);
+
+    // Error interface enforcement
+    void check_error_interface_impl(Program& program);
+    bool has_method(const std::string& type_name, const std::string& method_name, Program& program);
+
+    CompilerConfig config_;
 };
 
 } // namespace binar

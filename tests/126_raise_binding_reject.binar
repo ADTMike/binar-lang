@@ -5,6 +5,10 @@ type Myerr {
     code int
 }
 
+fn Error(e Myerr) string {
+    return "error"
+}
+
 fn get_error() error {
     return Myerr{code: 42}
 }
@@ -14,6 +18,6 @@ fn caller() int {
     return 0
 }
 
-fn main() int {
-    return caller()
+fn main() {
+    os.Exit(caller())
 }

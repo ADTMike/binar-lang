@@ -33,7 +33,7 @@ add_definitions(${LLVM_DEFINITIONS})
 include_directories(${LLVM_INCLUDE_DIRS})
 
 # Collect LLVM needed libs
-llvm_map_components_to_libnames(llvm_libs core support irreader analysis transformutils passes codegen x86codegen x86asmparser x86info)
+llvm_map_components_to_libnames(llvm_libs core support irreader analysis transformutils passes codegen x86codegen x86asmparser x86info armcodegen arminfo)
 
 # Source files
 set(SOURCES
@@ -42,6 +42,7 @@ set(SOURCES
     src/parser.cpp
     src/sema.cpp
     src/codegen.cpp
+    src/config.cpp
 )
 
 add_executable(binar ${SOURCES})

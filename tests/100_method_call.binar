@@ -7,9 +7,9 @@ fn add_to(x int, y int) int {
     return x + y
 }
 
-fn main() int {
+fn main() {
     x := 7
     a := x.double()
     b := x.add_to(3)
-    return a + b
+    os.Exit(a + b)
 }

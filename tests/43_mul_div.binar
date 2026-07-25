@@ -1,5 +1,5 @@
 // exit: 9
-fn main() int {
+fn main() {
     x := 3
-    return x * x
+    os.Exit(x * x)
 }

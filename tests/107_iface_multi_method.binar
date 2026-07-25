@@ -22,7 +22,7 @@ fn Sum(l Logger) int {
     return 30
 }
 
-fn main() int {
+fn main() {
     z := ZapLogger{X: 10, Y: 20}
-    return Sum(z)
+    os.Exit(Sum(z))
 }

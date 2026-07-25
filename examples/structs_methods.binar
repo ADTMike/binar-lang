@@ -1,0 +1,36 @@
+// Structs and methods in binar
+
+type Vec2 {
+    X int
+    Y int
+}
+
+fn Length(v *Vec2) int {
+    return (v.X * v.X + v.Y * v.Y)
+}
+
+fn Scale(v *Vec2, s int) {
+    v.X = v.X * s
+    v.Y = v.Y * s
+}
+
+type Rect {
+    w int
+    h int
+}
+
+fn Area(r Rect) int {
+    return r.w * r.h
+}
+
+fn main() {
+    v := Vec2{ X: 3, Y: 4 }
+    len := v.Length()
+    Scale(&v, 2)
+
+    r := Rect{ w: 5, h: 10 }
+    a := Area(r)
+
+    // 25 + 50 = 75, expect exit code 75
+    os.Exit(len + a)
+}

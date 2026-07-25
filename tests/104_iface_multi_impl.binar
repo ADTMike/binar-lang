@@ -22,10 +22,10 @@ fn Process(l Logger) int {
     return 42
 }
 
-fn main() int {
+fn main() {
     z := ZapLogger{X: 10}
     c := ConsoleLogger{X: 20}
     v1 := Process(z)
     v2 := Process(c)
-    return v1
+    os.Exit(v1)
 }

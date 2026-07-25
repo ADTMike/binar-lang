@@ -4,8 +4,8 @@ type Pair {
     b int
 }
 
-fn main() int {
+fn main() {
     p := Pair{ a: 10, b: 5 }
     p.a = p.a / p.b
-    return p.a
+    os.Exit(p.a)
 }

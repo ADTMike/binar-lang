@@ -2,9 +2,12 @@
 build/
 tmp/
 *.o
+*.out
 output.o
+output
 
-# Compiled test binaries
+# Compiled binaries
+*.bin
 tests/*/test
 
 # Editor
@@ -13,6 +16,16 @@ tests/*/test
 *~
 .vscode/
 .idea/
+*.sublime-project
+*.sublime-workspace
+.project
+.cproject
+.settings/
 
 # OS
 .DS_Store
+Thumbs.db
+
+# LLVM IR dumps
+*.ll
+*.bc

@@ -6,6 +6,6 @@ fn Fib(n int) int {
     return Fib(n - 1) + Fib(n - 2)
 }
 
-fn main() int {
-    return Fib(5)
+fn main() {
+    os.Exit(Fib(5))
 }

@@ -1,6 +1,6 @@
 // exit: 42
-fn main() int {
+fn main() {
     x := 42
     p := &x
-    return *p
+    os.Exit(*p)
 }

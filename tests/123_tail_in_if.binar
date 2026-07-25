@@ -1,6 +1,14 @@
 // exit: 0
 // Test: tail recursion inside if/else branches
 
+type CountdownErr {
+    code int
+}
+
+fn Error(e CountdownErr) string {
+    return "countdown"
+}
+
 fn count_down(n int) error {
     if n <= 0 {
         return nil
@@ -9,10 +17,10 @@ fn count_down(n int) error {
     }
 }
 
-fn main() int {
+fn main() {
     err := count_down(10)
-    if err != 0 {
-        return 1
+    if err != nil {
+        os.Exit(1)
     }
-    return 0
+    os.Exit(0)
 }

@@ -4,7 +4,7 @@ type Point {
     y int
 }
 
-fn main() int {
+fn main() {
     p := Point{ x: 3, y: 4 }
-    return p.x + p.y
+    os.Exit(p.x + p.y)
 }

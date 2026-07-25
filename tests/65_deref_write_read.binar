@@ -1,10 +1,10 @@
 // exit: 0
-fn main() int {
+fn main() {
     x := 5
     p := &x
     *p = 5
     if x == 5 {
-        return 0
+        os.Exit(0)
     }
-    return 1
+    os.Exit(1)
 }

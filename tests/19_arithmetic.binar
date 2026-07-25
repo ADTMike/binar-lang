@@ -1,6 +1,6 @@
 // exit: 42
-fn main() int {
+fn main() {
     x := 10
     y := 32
-    return x + y
+    os.Exit(x + y)
 }

@@ -1,7 +1,10 @@
 #include "sema.h"
 #include <set>
+#include <functional>
 
 namespace binar {
+
+Sema::Sema(const CompilerConfig& cfg) : config_(cfg) {}
 
 bool Sema::analyze(Program& program) {
     // First pass: collect type and interface declarations
@@ -31,9 +34,41 @@ bool Sema::analyze(Program& program) {
         }
     }
 
+    // Register built-in interfaces from config
+    for (const auto& bi : config_.builtin_interfaces) {
+        InterfaceInfo info;
+        info.name = bi.name;
+        for (const auto& method : bi.methods) {
+            InterfaceMethod m;
+            m.name = method.name;
+            m.is_pointer = method.is_pointer;
+            auto param_type = std::make_unique<TypeAnnotation>();
+            param_type->kind = TypeKind::NAMED;
+            param_type->name = method.param_type;
+            m.param_type = std::move(param_type);
+            info.methods.push_back(std::move(m));
+        }
+        interfaces_[bi.name] = std::move(info);
+    }
+
     // Second pass: check declarations
     for (auto& decl : program.decls) {
         check_decl(decl);
+    }
+
+    // Validate return types: max 2, if 2 then second must be error
+    for (auto& decl : program.decls) {
+        if (decl.kind != DeclKind::FN) continue;
+        if (decl.fn.return_types.size() > 2) {
+            error("function '" + decl.fn.name + "' has too many return types (max 2)",
+                  decl.line, decl.column);
+        } else if (decl.fn.return_types.size() == 2) {
+            std::string second = decl.fn.return_types[1]->name;
+            if (second != "error") {
+                error("second return type must be 'error', got '" + second + "'",
+                      decl.line, decl.column);
+            }
+        }
     }
 
     // Third pass: tag interface-returning functions
@@ -101,6 +136,11 @@ bool Sema::analyze(Program& program) {
     // Fifth pass: enforce raise syntax rules
     if (errors_.empty()) {
         check_raise_syntax(program);
+    }
+
+    // Sixth pass: enforce error interface implementation
+    if (errors_.empty()) {
+        check_error_interface_impl(program);
     }
 
     return errors_.empty();
@@ -934,6 +974,71 @@ void Sema::check_raise_syntax(Program& program) {
                       stmt->line, stmt->column);
             }
         }
+    }
+}
+
+bool Sema::has_method(const std::string& type_name, const std::string& method_name, Program& program) {
+    for (auto& decl : program.decls) {
+        if (decl.kind != DeclKind::FN) continue;
+        if (decl.fn.name != method_name) continue;
+        if (decl.fn.params.empty()) continue;
+        TypeAnnotation* param_type = decl.fn.params[0].type.get();
+        if (param_type && param_type->kind == TypeKind::NAMED && param_type->name == type_name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void Sema::check_error_interface_impl(Program& program) {
+    // For every function returning error, walk return statements.
+    // For each struct literal return, verify the struct has an Error() method.
+    for (auto& decl : program.decls) {
+        if (decl.kind != DeclKind::FN) continue;
+
+        bool returns_error = false;
+        for (auto& rt : decl.fn.return_types) {
+            if (rt->name == "error") {
+                returns_error = true;
+                break;
+            }
+        }
+        if (!returns_error) continue;
+
+        // Walk body for return statements
+        std::function<void(const std::vector<StmtPtr>&)> walk_stmts = [&](const std::vector<StmtPtr>& stmts) {
+            for (auto& stmt : stmts) {
+                if (stmt->kind == StmtKind::RETURN) {
+                    // Check: parser puts single return in expr, multi-return in return_values
+                    auto check_expr = [&](ExprPtr& e) {
+                        if (e && e->kind == ExprKind::STRUCT_LITERAL) {
+                            std::string type_name = e->struct_literal.type_name;
+                            if (!has_method(type_name, "Error", program)) {
+                                error("type '" + type_name + "' returned as error but does not implement Error() method",
+                                      stmt->line, stmt->column);
+                            }
+                        }
+                    };
+                    if (!stmt->return_values.empty()) {
+                        for (auto& rv : stmt->return_values) {
+                            check_expr(rv);
+                        }
+                    } else if (stmt->expr) {
+                        check_expr(stmt->expr);
+                    }
+                } else if (stmt->kind == StmtKind::IF) {
+                    for (auto& branch : stmt->if_stmt.branches) {
+                        walk_stmts(branch.body);
+                    }
+                    walk_stmts(stmt->if_stmt.else_body);
+                } else if (stmt->kind == StmtKind::BLOCK) {
+                    walk_stmts(stmt->block.stmts);
+                } else if (stmt->kind == StmtKind::WHILE) {
+                    walk_stmts(stmt->while_stmt.body);
+                }
+            }
+        };
+        walk_stmts(decl.fn.body);
     }
 }
 

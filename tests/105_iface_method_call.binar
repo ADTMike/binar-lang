@@ -18,7 +18,7 @@ fn Process(l Logger) int {
     return 10
 }
 
-fn main() int {
+fn main() {
     c := Counter{Val: 0}
-    return Process(c)
+    os.Exit(Process(c))
 }

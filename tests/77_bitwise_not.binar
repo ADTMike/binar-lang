@@ -1,5 +1,5 @@
 // exit: 252
-fn main() int {
+fn main() {
     x := 3
-    return ~x
+    os.Exit(~x)
 }

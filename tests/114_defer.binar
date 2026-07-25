@@ -1,16 +1,24 @@
 // exit: 0
 // Test defer keyword — LIFO order, works with raise
 
+type Myerr {
+    code int
+}
+
+fn Error(e Myerr) string {
+    return "error"
+}
+
 fn store(addr *int, val int) int {
     *addr = val
     return 0
 }
 
-fn inner(should_fail int) (int, int) {
+fn inner(should_fail int) int, error {
     if should_fail != 0 {
-        return 0, 5
+        return 0, Myerr{code: 5}
     }
-    return 42, 0
+    return 42, nil
 }
 
 fn test_lifo(flag *int) int {
@@ -19,25 +27,25 @@ fn test_lifo(flag *int) int {
     return 0
 }
 
-fn test_raise(flag *int) (int, int) {
+fn test_raise(flag *int) int, error {
     defer store(flag, 99)
     // raise triggers return on error; deferred calls should still fire
     r := inner(1) raise
-    return r, 0
+    return r, nil
 }
 
-fn main() int {
+fn main() {
     // Test LIFO order
     f := 0
     test_lifo(&f)
-    if f != 1 { return 1 }
+    if f != 1 { os.Exit(1) }
 
     // Test raise with defer
     f2 := 0
     _, err := test_raise(&f2)
-    if err != 5 { return 2 }
+    if err == nil { os.Exit(2) }
     // Deferred store should have set f2 to 99
-    if f2 != 99 { return 3 }
+    if f2 != 99 { os.Exit(3) }
 
-    return 0
+    os.Exit(0)
 }

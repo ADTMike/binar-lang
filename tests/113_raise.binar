@@ -1,34 +1,42 @@
 // exit: 0
 // Test raise keyword for error propagation
 
-fn div(a int, b int) (int, int) {
-    if b == 0 {
-        return 0, 1
-    }
-    return a / b, 0
+type Myerr {
+    code int
 }
 
-fn inner() (int, int) {
+fn Error(e Myerr) string {
+    return "error"
+}
+
+fn div(a int, b int) int, error {
+    if b == 0 {
+        return 0, Myerr{code: 1}
+    }
+    return a / b, nil
+}
+
+fn inner() int, error {
     // raise: propagate error from div
     x := div(10, 2) raise
-    return x + 100, 0
+    return x + 100, nil
 }
 
-fn main() int {
+fn main() {
     // Test raise with success
     r, err := inner()
-    if err != 0 {
-        return 1
+    if err != nil {
+        os.Exit(1)
     }
     if r != 105 {
-        return 2
+        os.Exit(2)
     }
 
     // Test that div with zero causes error
     _, err2 := div(1, 0)
-    if err2 == 0 {
-        return 3
+    if err2 == nil {
+        os.Exit(3)
     }
 
-    return 0
+    os.Exit(0)
 }

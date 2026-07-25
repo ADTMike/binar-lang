@@ -2,6 +2,14 @@
 // Test simple tail recursion: should be transformed to while loop
 // countdown(5) descends to 0 and returns nil (success)
 
+type CountdownErr {
+    code int
+}
+
+fn Error(e CountdownErr) string {
+    return "countdown"
+}
+
 fn countdown(n int) error {
     if n <= 0 {
         return nil
@@ -9,10 +17,10 @@ fn countdown(n int) error {
     return countdown(n - 1)
 }
 
-fn main() int {
+fn main() {
     err := countdown(5)
-    if err != 0 {
-        return 1
+    if err != nil {
+        os.Exit(1)
     }
-    return 0
+    os.Exit(0)
 }

@@ -1,0 +1,41 @@
+// Error handling in binar
+// Demonstrates: error returns, raise, defer, os.Exit
+
+type FileErr {
+    code int
+}
+
+fn Error(e FileErr) string {
+    return "file error"
+}
+
+fn open(name string) error {
+    if name == "" {
+        return FileErr{code: 1}
+    }
+    return nil
+}
+
+fn cleanup() {
+    // cleanup logic here
+}
+
+fn process(name string) error {
+    defer cleanup()
+    open(name) raise
+    return nil
+}
+
+fn main() {
+    // This will succeed (no error)
+    err := process("test.txt")
+    if err != nil {
+        os.Exit(1)
+    }
+
+    // This will fail — error is caught, exit code 1
+    err2 := process("")
+    if err2 != nil {
+        os.Exit(1)
+    }
+}

@@ -1,6 +1,6 @@
 // exit: 8
-fn main() int {
+fn main() {
     x := 1
     x <<= 3
-    return x
+    os.Exit(x)
 }

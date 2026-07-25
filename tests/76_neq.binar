@@ -1,9 +1,9 @@
 // exit: 2
-fn main() int {
+fn main() {
     x := 10
     y := 10
     if x != y {
-        return 1
+        os.Exit(1)
     }
-    return 2
+    os.Exit(2)
 }
