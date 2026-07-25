@@ -1,5 +1,6 @@
 // exit: 0
 // Test defer keyword — LIFO order, works with raise
+import { os } from "os"
 
 type Myerr {
     code int

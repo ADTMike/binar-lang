@@ -62,6 +62,7 @@ enum class ExprKind {
     SLICE,
     DOT_ACCESS,
     SIZEOF,
+    LEN,
     STRUCT_LITERAL,
     POSTFIX_INC,
     POSTFIX_DEC,
@@ -135,6 +136,10 @@ struct PostfixExpr {
     ExprPtr operand;
 };
 
+struct LenExpr {
+    ExprPtr arg;
+};
+
 struct Expr {
     ExprKind kind;
     int line;
@@ -156,6 +161,7 @@ struct Expr {
     AssignExpr assign;
     StructLiteralExpr struct_literal;
     PostfixExpr postfix;
+    LenExpr len;
 
     Expr() : kind(ExprKind::INT_LIT), line(0), column(0),
              int_val(0), float_val(0.0), char_val(0), bool_val(false) {}

@@ -1,5 +1,6 @@
 // exit: 0
 // Test: defer inside inlined interface-returning function executes
+import { os } from "os"
 
 type Myerr {
     code int

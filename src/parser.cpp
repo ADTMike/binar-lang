@@ -1324,9 +1324,22 @@ ExprPtr Parser::parse_primary() {
         return expr;
     }
 
-    // Identifier
+    // Identifier or built-in: len
     if (check(TokenType::IDENT)) {
-        Token tok = advance();
+        Token tok = peek();
+        if (tok.value == "len" && pos_ + 1 < tokens_.size() &&
+            tokens_[pos_ + 1].type == TokenType::LPAREN) {
+            advance(); // consume 'len'
+            advance(); // consume '('
+            auto expr = std::make_unique<Expr>();
+            expr->kind = ExprKind::LEN;
+            expr->line = tok.line;
+            expr->column = tok.column;
+            expr->len.arg = parse_expr();
+            expect(TokenType::RPAREN, "expected ')'");
+            return expr;
+        }
+        advance();
         auto expr = std::make_unique<Expr>();
         expr->kind = ExprKind::IDENT;
         expr->line = tok.line;
@@ -1467,6 +1480,9 @@ ExprPtr clone_expr(const ExprPtr& src) {
             dst->dot.field = src->dot.field;
             break;
         case ExprKind::SIZEOF:
+            break;
+        case ExprKind::LEN:
+            dst->len.arg = clone_expr(src->len.arg);
             break;
         case ExprKind::STRUCT_LITERAL:
             dst->struct_literal.type_name = src->struct_literal.type_name;

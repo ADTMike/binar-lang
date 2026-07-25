@@ -1,5 +1,6 @@
 // exit: 0
 // Test: tail recursion inside if/else branches
+import { os } from "os"
 
 type CountdownErr {
     code int

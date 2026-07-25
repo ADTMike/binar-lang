@@ -1,5 +1,6 @@
 // exit: 0
 // Test: defer inside inlined function with raise executes before return
+import { os } from "os"
 
 type Myerr {
     code int

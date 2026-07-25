@@ -87,6 +87,8 @@ public:
 
     std::vector<std::string> errors_;
 
+    llvm::StructType* string_type_ = nullptr;  // cached fat string type {ptr, len}
+
     void error(const std::string& msg) {
         errors_.push_back(msg);
     }
@@ -109,6 +111,15 @@ public:
             LLVMInitializeX86AsmPrinter();
         }
         // AArch64 init requires linking armcodegen/armasmparser libs
+
+        // Create the fat string type: {ptr, len}
+        string_type_ = llvm::StructType::create(*context_, "binar.string");
+        string_type_->setBody({llvm::PointerType::get(*context_, 0),
+                               llvm::IntegerType::get(*context_, config_.types.int_width)});
+        struct_types_["string"] = string_type_;
+        struct_types_["binar.string"] = string_type_;
+        struct_fields_["string"] = {"ptr", "len"};
+        struct_fields_["binar.string"] = {"ptr", "len"};
     }
 
     void gen_decl(Decl& decl);
@@ -1355,8 +1366,13 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
         case ExprKind::FLOAT_LIT:
             return llvm::ConstantFP::get(*context_, llvm::APFloat(expr.float_val));
 
-        case ExprKind::STRING_LIT:
-            return builder_->CreateGlobalString(expr.string_val);
+        case ExprKind::STRING_LIT: {
+            llvm::Value* str_ptr = builder_->CreateGlobalString(expr.string_val);
+            llvm::Value* str_len = llvm::ConstantInt::get(*context_,
+                llvm::APInt(config_.types.int_width, expr.string_val.size()));
+            return llvm::ConstantStruct::get(string_type_,
+                {llvm::cast<llvm::Constant>(str_ptr), llvm::cast<llvm::Constant>(str_len)});
+        }
 
         case ExprKind::BOOL_LIT:
             return llvm::ConstantInt::get(*context_, llvm::APInt(1, expr.bool_val ? 1 : 0));
@@ -1405,8 +1421,20 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
                 case BinOp::MUL: return builder_->CreateMul(left, right, "multmp");
                 case BinOp::DIV: return builder_->CreateSDiv(left, right, "divtmp");
                 case BinOp::MOD: return builder_->CreateSRem(left, right, "modtmp");
-                case BinOp::EQ: return builder_->CreateICmpEQ(left, right, "eqtmp");
-                case BinOp::NEQ: return builder_->CreateICmpNE(left, right, "neqtmp");
+                case BinOp::EQ: {
+                    if (left->getType()->isStructTy()) {
+                        left = builder_->CreateExtractValue(left, 0, "ptr");
+                        right = builder_->CreateExtractValue(right, 0, "ptr");
+                    }
+                    return builder_->CreateICmpEQ(left, right, "eqtmp");
+                }
+                case BinOp::NEQ: {
+                    if (left->getType()->isStructTy()) {
+                        left = builder_->CreateExtractValue(left, 0, "ptr");
+                        right = builder_->CreateExtractValue(right, 0, "ptr");
+                    }
+                    return builder_->CreateICmpNE(left, right, "neqtmp");
+                }
                 case BinOp::LT: return builder_->CreateICmpSLT(left, right, "lttmp");
                 case BinOp::GT: return builder_->CreateICmpSGT(left, right, "gttmp");
                 case BinOp::LTE: return builder_->CreateICmpSLE(left, right, "letmp");
@@ -1495,18 +1523,6 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
                 if (expr.call.callee->dot.object->kind == ExprKind::IDENT) {
                     std::string first = expr.call.callee->dot.object->ident;
 
-                    // Built-in module functions (os.Exit)
-                    if (first == "os" && fn_name_bare == "Exit") {
-                        std::vector<llvm::Value*> exit_args;
-                        for (auto& arg : expr.call.args) {
-                            exit_args.push_back(gen_expr(*arg));
-                        }
-                        if (!exit_args.empty()) {
-                            emit_exit_code(exit_args[0]);
-                        }
-                        return nullptr;
-                    }
-
                     auto it = import_names_.find(first);
                     if (it != import_names_.end()) {
                         // Import binding found: file.fn pattern
@@ -1530,43 +1546,6 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
             std::vector<llvm::Value*> args;
             for (auto& arg : expr.call.args) {
                 args.push_back(gen_expr(*arg));
-            }
-
-            // Special case: fmt.Print/Println with string literal
-            if (fn_name_mangled == "fmt.Print" || fn_name_mangled == "fmt.Println") {
-                if (!expr.call.args.empty() &&
-                    expr.call.args[0]->kind == ExprKind::STRING_LIT) {
-                    std::string str_val = expr.call.args[0]->string_val;
-                    int str_len = (int)str_val.size();
-
-                    auto write_it = config_.syscall.calls.find("write");
-                    if (write_it != config_.syscall.calls.end()) {
-                        std::string asm_str = "movq $$" + std::to_string(write_it->second.number) + ", %rax\n\t"
-                                            + "movq $$1, %rdi\n\t"
-                                            + "movq $0, %rsi\n\t"
-                                            + "movq $$" + std::to_string(str_len) + ", %rdx\n\t"
-                                            + config_.syscall.syscall_insn;
-                        llvm::FunctionType* write_type = llvm::FunctionType::get(
-                            llvm::Type::getVoidTy(*context_),
-                            {llvm::PointerType::get(*context_, 0)}, false);
-                        llvm::InlineAsm* write_asm = llvm::InlineAsm::get(
-                            write_type, asm_str, "r," + write_it->second.clobbers, true);
-                        builder_->CreateCall(write_asm, {args[0]});
-
-                        if (fn_name_bare == "Println") {
-                            llvm::Value* nl_str = builder_->CreateGlobalString("\n");
-                            std::string nl_asm_str = "movq $$" + std::to_string(write_it->second.number) + ", %rax\n\t"
-                                                   + "movq $$1, %rdi\n\t"
-                                                   + "movq $0, %rsi\n\t"
-                                                   + "movq $$1, %rdx\n\t"
-                                                   + config_.syscall.syscall_insn;
-                            llvm::InlineAsm* nl_asm = llvm::InlineAsm::get(
-                                write_type, nl_asm_str, "r," + write_it->second.clobbers, true);
-                            builder_->CreateCall(nl_asm, {nl_str});
-                        }
-                    }
-                    return nullptr;
-                }
             }
 
             // Visibility check: exported functions only for cross-package calls
@@ -1603,6 +1582,11 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
                 }
                 if (!func) {
                     func = module_->getFunction(fn_name_mangled);
+                }
+                // Fallback: same-package call (bare name without file prefix)
+                if (!func && !fn_name_mangled.empty() && fn_name_mangled == fn_name_bare &&
+                    !current_file_.empty()) {
+                    func = module_->getFunction(current_file_ + "." + fn_name_mangled);
                 }
             } else {
                 llvm::Value* callee_val = gen_expr(*expr.call.callee);
@@ -1720,6 +1704,13 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
         case ExprKind::SLICE:
         case ExprKind::SIZEOF:
             return llvm::ConstantInt::get(*context_, llvm::APInt(64, 0));
+        case ExprKind::LEN: {
+            llvm::Value* val = gen_expr(*expr.len.arg);
+            if (val->getType()->isStructTy()) {
+                return builder_->CreateExtractValue(val, 1, "len");
+            }
+            return llvm::ConstantInt::get(*context_, llvm::APInt(config_.types.int_width, 0));
+        }
 
         case ExprKind::POSTFIX_INC:
         case ExprKind::POSTFIX_DEC: {
@@ -1851,7 +1842,7 @@ llvm::Type* CodegenImpl::resolve_type(TypeAnnotation& type) {
             if (type.name == "bool")
                 return llvm::Type::getIntNTy(*context_, config_.types.bool_width);
             if (type.name == "string")
-                return llvm::PointerType::get(*context_, 0);
+                return string_type_;
             if (type.name == "char")
                 return llvm::Type::getIntNTy(*context_, config_.types.char_width);
             if (type.name == "error")

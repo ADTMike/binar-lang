@@ -1,6 +1,7 @@
 // exit: 5
 // Test: non-interface recursion should work unchanged
 // Fib(5) = 5 (Fibonacci)
+import { os } from "os"
 
 fn Fib(n int) int {
     if n <= 1 {

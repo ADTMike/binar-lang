@@ -1,5 +1,6 @@
 // exit: 2
 // Test chained error propagation: source → middle → main via non-raise inlining
+import { os } from "os"
 
 type Myerr {
     code int

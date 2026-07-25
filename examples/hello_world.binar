@@ -2,6 +2,10 @@
 // Compile: binar -o hello.o hello_world.binar
 // Link:    gcc -nostartfiles -o hello hello.o
 
+import { os } from "os"
+import { fmt } from "fmt"
+
 fn main() {
-    // exit code 0 = success
+    fmt.Println("hello world")
+    os.Exit(0)
 }

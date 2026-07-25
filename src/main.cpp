@@ -11,6 +11,7 @@
 #include <set>
 #include <map>
 #include <filesystem>
+#include <unistd.h>
 
 void print_usage(const char* prog) {
     std::cerr << "Usage: " << prog << " [options] <input.binar>" << std::endl;
@@ -174,10 +175,27 @@ ResolveResult resolve_package_dir(const std::string& import_path,
         }
     }
 
-    // Std library
+    // Std library: check BINAR_HOME, then relative to binary
     const char* binar_home = getenv("BINAR_HOME");
+    std::vector<std::string> std_roots;
     if (binar_home) {
-        std::string std_dir = std::string(binar_home) + "/std/" + import_path;
+        std_roots.push_back(std::string(binar_home) + "/std");
+    }
+    // Fallback: relative to binary location (build/binar → ../std)
+    {
+        char exe_path[4096];
+        ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+        if (len > 0) {
+            exe_path[len] = '\0';
+            std::string bin_dir = std::filesystem::path(exe_path).parent_path().string();
+            std_roots.push_back(bin_dir + "/../std");
+        }
+    }
+    // Fallback: relative to current working directory
+    std_roots.push_back(std::filesystem::current_path().string() + "/std");
+
+    for (auto& root : std_roots) {
+        std::string std_dir = root + "/" + import_path;
         if (std::filesystem::is_directory(std_dir)) return {std_dir, nullptr};
     }
 
@@ -239,7 +257,7 @@ void process_imports(const std::string& parent_logical,
             } else {
                 logical_pkg = binding.package_path;
                 auto res = resolve_package_dir(logical_pkg, mod);
-                if (!res.module) {
+                if (res.dir.empty()) {
                     std::cerr << "error: cannot find package '" << logical_pkg << "'" << std::endl;
                     exit(1);
                 }
@@ -368,12 +386,21 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Error: imports require a module
+    // Error: non-stdlib imports require a module
     if (mod.name.empty()) {
         for (auto& decl : main_program.decls) {
             if (decl.kind == binar::DeclKind::IMPORT) {
-                std::cerr << "error: imports require a binar.mod with 'module <name>' declaration" << std::endl;
-                return 1;
+                for (auto& binding : decl.import_block.bindings) {
+                    if (!binding.package_path.empty()) {
+                        auto res = resolve_package_dir(binding.package_path, mod);
+                        if (res.dir.empty()) {
+                            std::cerr << "error: import '" << binding.package_path
+                                      << "' requires a binar.mod with 'module <name>' declaration"
+                                      << std::endl;
+                            return 1;
+                        }
+                    }
+                }
             }
         }
     }

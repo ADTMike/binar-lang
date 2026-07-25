@@ -1,5 +1,6 @@
 // exit: 0
 // Test: binding raise on multi-return (T, error) function is OK (positive case)
+import { os } from "os"
 
 type Myerr {
     code int

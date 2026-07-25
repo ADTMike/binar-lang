@@ -1,5 +1,6 @@
 // exit: 0
 // Test raise keyword for error propagation
+import { os } from "os"
 
 type Myerr {
     code int

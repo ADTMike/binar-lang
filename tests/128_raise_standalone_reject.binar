@@ -1,5 +1,6 @@
 // error: raise on multi-return function 'div' must use binding form
 // Test: standalone raise on multi-return (T, error) function is rejected
+import { os } from "os"
 
 type Myerr {
     code int

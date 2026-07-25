@@ -1,5 +1,6 @@
 // exit: 0
 // Test: standalone raise on single-error-return function is OK (positive case)
+import { os } from "os"
 
 type Myerr {
     code int

@@ -386,6 +386,9 @@ void Sema::check_expr(Expr& expr) {
             break;
         case ExprKind::SIZEOF:
             break;
+        case ExprKind::LEN:
+            check_expr(*expr.len.arg);
+            break;
     }
 }
 

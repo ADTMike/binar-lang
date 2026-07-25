@@ -1,4 +1,5 @@
 // exit: 5
+import { os } from "os"
 fn main() {
     a := 3
     b := 7

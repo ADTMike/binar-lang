@@ -1,5 +1,6 @@
 // error: mutual recursion detected among interface-returning functions
 // Test: mutual recursion should produce compile error
+import { os } from "os"
 
 fn a() error {
     b() raise

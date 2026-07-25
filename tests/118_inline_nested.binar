@@ -1,5 +1,6 @@
 // exit: 2
 // Test nested non-raise inlining: middle calls source, main calls middle
+import { os } from "os"
 
 type Myerr {
     code int

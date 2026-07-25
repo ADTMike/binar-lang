@@ -1,5 +1,6 @@
 // exit: 0
 // Test: defer inside inlined function without explicit return executes on fall-through
+import { os } from "os"
 
 type Myerr {
     code int

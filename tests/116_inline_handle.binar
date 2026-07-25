@@ -1,5 +1,6 @@
 // exit: 1
 // Test non-raise inline: error value available for handling
+import { os } from "os"
 
 type Myerr {
     code int

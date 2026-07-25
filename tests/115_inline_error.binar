@@ -1,5 +1,6 @@
 // exit: 0
 // Test basic error inline: function returning error is inlined at call site
+import { os } from "os"
 
 type Myerr {
     code int

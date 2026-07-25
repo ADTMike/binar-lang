@@ -1,6 +1,7 @@
 // exit: 0
 // Test simple tail recursion: should be transformed to while loop
 // countdown(5) descends to 0 and returns nil (success)
+import { os } from "os"
 
 type CountdownErr {
     code int
