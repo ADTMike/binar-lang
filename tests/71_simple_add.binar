@@ -1,8 +1,0 @@
-// exit: 10
-import { os } from "os"
-fn main() {
-    x := 5
-    y := 5
-    z := x + y
-    os.Exit(z)
-}

@@ -7,7 +7,6 @@ namespace binar {
 static const std::unordered_map<std::string, TokenType> keywords = {
     {"fn",      TokenType::KW_FN},
     {"type",    TokenType::KW_TYPE},
-    {"const",   TokenType::KW_CONST},
     {"import",  TokenType::KW_IMPORT},
     {"if",      TokenType::KW_IF},
     {"else",    TokenType::KW_ELSE},
@@ -15,7 +14,7 @@ static const std::unordered_map<std::string, TokenType> keywords = {
     {"while",   TokenType::KW_WHILE},
     {"return",  TokenType::KW_RETURN},
     {"break",   TokenType::KW_BREAK},
-    {"continue", TokenType::KW_CONTINUE},
+    {"pass",    TokenType::KW_PASS},
     {"range",   TokenType::KW_RANGE},
     {"defer",   TokenType::KW_DEFER},
     {"nil",     TokenType::KW_NIL},
@@ -25,10 +24,9 @@ static const std::unordered_map<std::string, TokenType> keywords = {
     {"case",    TokenType::KW_CASE},
     {"default", TokenType::KW_DEFAULT},
     {"asm",     TokenType::KW_ASM},
-    {"volatile",  TokenType::KW_VOLATILE},
-    {"iface",     TokenType::KW_IFACE},
-    {"from",      TokenType::KW_FROM},
-    {"raise",     TokenType::KW_RAISE},
+    {"from",    TokenType::KW_FROM},
+    {"raise",   TokenType::KW_RAISE},
+    {"iota",    TokenType::KW_IOTA},
     {"int",     TokenType::TYPE_INT},
     {"float",   TokenType::TYPE_FLOAT},
     {"bool",    TokenType::TYPE_BOOL},
@@ -55,7 +53,6 @@ const char* token_type_name(TokenType type) {
         case TokenType::IDENT: return "IDENT";
         case TokenType::KW_FN: return "fn";
         case TokenType::KW_TYPE: return "type";
-        case TokenType::KW_CONST: return "const";
         case TokenType::KW_IMPORT: return "import";
         case TokenType::KW_IF: return "if";
         case TokenType::KW_ELSE: return "else";
@@ -63,7 +60,7 @@ const char* token_type_name(TokenType type) {
         case TokenType::KW_WHILE: return "while";
         case TokenType::KW_RETURN: return "return";
         case TokenType::KW_BREAK: return "break";
-        case TokenType::KW_CONTINUE: return "continue";
+        case TokenType::KW_PASS: return "pass";
         case TokenType::KW_RANGE: return "range";
         case TokenType::KW_DEFER: return "defer";
         case TokenType::KW_NIL: return "nil";
@@ -73,10 +70,9 @@ const char* token_type_name(TokenType type) {
         case TokenType::KW_CASE: return "case";
         case TokenType::KW_DEFAULT: return "default";
         case TokenType::KW_ASM: return "asm";
-        case TokenType::KW_VOLATILE: return "volatile";
-        case TokenType::KW_IFACE: return "iface";
         case TokenType::KW_FROM: return "from";
         case TokenType::KW_RAISE: return "raise";
+        case TokenType::KW_IOTA: return "iota";
         case TokenType::TYPE_INT: return "int";
         case TokenType::TYPE_FLOAT: return "float";
         case TokenType::TYPE_BOOL: return "bool";

@@ -1,0 +1,4 @@
+// error: expected type name after '~'
+fn Process(l ~) int {
+    return 0
+}

@@ -1,7 +1,0 @@
-// exit: 255
-import { os } from "os"
-fn main() {
-    x := 0x0F
-    x |= 0xF0
-    os.Exit(x)
-}

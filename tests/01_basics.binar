@@ -1,0 +1,33 @@
+// exit: 0
+// Tests: basic types, variables, functions
+import { os } from "os"
+
+fn check(expected int, actual int) {
+    if expected != actual {
+        os.Exit(1)
+    }
+}
+
+fn main() {
+    // int variables
+    x := 10
+    y := 20
+    check(30, x + y)
+
+    // typed variables
+    a int = 5
+    b int = 10
+    check(15, a + b)
+
+    // bool
+    t := true
+    if t {
+        check(1, 1)
+    }
+
+    // string
+    s := "hello"
+    check(5, len(s))
+
+    os.Exit(0)
+}

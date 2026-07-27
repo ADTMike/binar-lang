@@ -50,6 +50,35 @@ fn main() {
 }
 ```
 
+Global variables:
+
+```binar
+x := 10            // unexported (lowercase first letter)
+Abc := 10          // exported (uppercase first letter)
+_abc := 10         // unexported (_ prefix)
+
+y int              // type annotation only
+z int = 10         // type annotation + initializer
+```
+
+### Constants
+
+ALL_CAPS names are constants (inlined at compile time):
+
+```binar
+RED 10
+BLUE 20
+_GREEN 30          // unexported
+```
+
+Iota auto-increment:
+
+```binar
+RED iota           // 0
+BLUE               // 1
+YELLOW             // 2
+```
+
 ### Functions
 
 ```binar
@@ -113,21 +142,46 @@ fn process(name string) error {
 }
 ```
 
-### Interfaces
+### Structural Types
 
-Structural typing — no `implements` keyword. Any type with matching methods satisfies the interface.
+`~TypeName` accepts any type with matching methods. Methods are inferred from usage in the function body.
 
 ```binar
-iface Logger {
-    fn Log(Logger)
+type ZapLogger { X int }
+type ConsoleLogger { X int }
+
+fn GetVal(l ZapLogger) int { return l.X }
+fn GetVal(l ConsoleLogger) int { return l.X }
+
+fn Process(l ~ZapLogger) int {
+    return l.GetVal()
 }
 
-type Console {}
+fn main() {
+    z := ZapLogger{X: 10}
+    c := ConsoleLogger{X: 20}
+    Process(z)    // OK: ZapLogger has GetVal
+    Process(c)    // OK: ConsoleLogger has GetVal
+}
+```
 
-fn Log(c Console) { ... }
+### Generics
 
-fn Process(l Logger) {
-    l.Log()
+```binar
+fn max[T](a T, b T) T {
+    if a > b { return a }
+    return b
+}
+
+type Pair[T] {
+    first T
+    second T
+}
+
+fn main() {
+    check(20, max(10, 20))              // type inference
+    check(99, max[int](99, 1))          // explicit type arg
+    p := Pair[int]{ first: 1, second: 2 }
 }
 ```
 
@@ -143,7 +197,7 @@ import { a }
 a.helper()
 ```
 
-Visibility is Go-style: uppercase = exported, lowercase = private.
+Visibility: `_` prefix = unexported, uppercase first letter = exported, lowercase first letter = unexported.
 
 Projects with imports need a `binar.mod`:
 ```
@@ -177,7 +231,7 @@ fn syscall1(num int, arg1 int) int {
 | `[5]int` | arrays |
 | `[]int` | slices |
 | `type Point { X int; Y int }` | structs |
-| `iface Reader { fn Read(Reader) int }` | interfaces |
+| `~TypeName` | structural type |
 
 `string` is `{ptr, len}` — a two-word struct, like Go. Use `len(s)` to get its length.
 
@@ -224,6 +278,4 @@ fmt.Println("hello")    // with newline
 bash tests/run_tests.sh
 ```
 
-131/131 passing.
-
-
+48/48 passing.

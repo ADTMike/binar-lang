@@ -1,0 +1,73 @@
+// exit: 0
+// Tests: bitwise ops, compound assign, inc/dec, shifts
+import { os } from "os"
+
+fn check(expected int, actual int) {
+    if expected != actual {
+        os.Exit(1)
+    }
+}
+
+fn main() {
+    // bitwise AND
+    check(15, 0xFF & 0x0F)
+
+    // bitwise OR
+    check(15, 0b1100 | 0b0011)
+
+    // bitwise XOR value
+    check(240, 0xFF ^ 0x0F)
+
+    // bitwise NOT
+    check(-4, ~3)
+
+    // shifts
+    check(24, 3 << 3)
+    check(3, 24 >> 3)
+    check(6, 3 << 1)
+
+    // compound assign
+    x := 10
+    x += 20
+    check(30, x)
+
+    // inc/dec
+    x2 := 10
+    x2++
+    check(11, x2)
+    x3 := 10
+    x3--
+    check(9, x3)
+
+    // double inc
+    x4 := 10
+    x4++
+    x4++
+    check(12, x4)
+
+    // all compound assign variants
+    x5 := 10
+    x5 -= 7
+    check(3, x5)
+    x6 := 10
+    x6 /= 2
+    check(5, x6)
+    x7 := 10
+    x7 %= 7
+    check(3, x7)
+    x8 := 0xFF
+    x8 &= 0x0F
+    check(15, x8)
+    x9 := 0x0F
+    x9 |= 0xF0
+    check(255, x9)
+    x10 := 0xFF
+    x10 ^= 0x0F
+    check(240, x10)
+    x11 := 1
+    x11 <<= 3
+    check(8, x11)
+    x12 := 8
+    x12 >>= 3
+    check(1, x12)
+}

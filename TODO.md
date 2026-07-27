@@ -7,7 +7,7 @@ Internal development notes. See [README.md](README.md) for user-facing documenta
 - 131/131 tests passing
 - `main()` (void) and `main() error` supported; `main() int` removed
 - `os.Exit(code)` built-in available
-- Error interface inline + raise + defer working
+- Error port inline + raise + defer working
 
 ## Standard Library
 

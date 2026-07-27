@@ -1,9 +1,0 @@
-// exit: 30
-import { os } from "os"
-fn Add(a int, b int) int {
-    return a + b
-}
-
-fn main() {
-    os.Exit(Add(10, 20))
-}

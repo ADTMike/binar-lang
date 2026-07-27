@@ -33,8 +33,9 @@ public:
     std::unordered_map<std::string, llvm::StructType*> struct_types_;
     std::unordered_map<std::string, std::vector<std::string>> struct_fields_;
     std::unordered_map<std::string, llvm::StructType*> named_struct_types_;
+    std::unordered_map<llvm::Value*, llvm::StructType*> value_struct_type_;
     struct ImportEntry {
-        std::string package_path;  // empty = same package
+        std::string package_path;
         std::string file;
     };
     std::map<std::string, ImportEntry> import_names_;
@@ -50,24 +51,33 @@ public:
     std::string current_package_;
     std::string current_file_;
 
-    // Interface and monomorphization support
-    std::set<std::string> interface_names_;
-    std::map<std::string, FnDecl> iface_fn_decls_;  // Functions with interface params (stored for monomorphization)
-    std::map<std::string, FnDecl*> iface_returning_decls_;  // Functions returning interface (stored for inlining)
-    struct InterfaceImpl {
-        std::string interface_name;
-        std::string concrete_type;
-        std::map<std::string, llvm::Function*> method_impls;
-    };
-    std::vector<InterfaceImpl> interface_impls_;
-    std::map<std::string, llvm::Function*> monomorphized_fns_;
-    std::map<std::string, llvm::Type*> type_params_;
+    // Structural type names registry (from ~TypeName params)
+    std::set<std::string> structural_names_;
 
-    struct InterfaceParam {
-        std::string param_name;
-        std::string interface_name;
+    // Tagged union infrastructure
+    llvm::StructType* error_tu_type_ = nullptr;
+    std::map<std::string, llvm::StructType*> structural_tu_types_;
+
+    struct TuImpl {
+        std::string type_name;
+        int tag;
+        llvm::StructType* struct_type;
+        uint64_t struct_size;
     };
-    std::vector<InterfaceParam> current_interface_params_;
+    std::vector<TuImpl> error_impls_;
+    std::map<std::string, std::vector<TuImpl>> structural_impls_reg_;
+
+    // Structural method registry: structural_name -> method signatures
+    struct StructuralMethodInfo {
+        std::string name;
+        std::string param_type;
+        bool is_pointer;
+        std::string return_type;
+    };
+    std::map<std::string, std::vector<StructuralMethodInfo>> structural_methods_;
+
+    // Structural parameter tracking (for method dispatch inside functions)
+    std::map<std::string, std::string> structural_param_types_;  // param_name -> structural_name
 
     struct LoopContext {
         llvm::BasicBlock* break_target;
@@ -77,17 +87,116 @@ public:
 
     std::vector<Expr*> deferred_calls_;
 
-    // Inlining state
-    bool inlining_ = false;        // true while generating inlined function body
-    bool inlining_raise_ = false;  // true if inlining in a raise context
-    llvm::BasicBlock* inlining_exit_bb_ = nullptr;  // block to branch to on return during inlining
-    llvm::AllocaInst* inlining_ret_alloca_ = nullptr;  // alloca for storing return value during non-raise inlining
-    bool current_stmt_raise_ = false;  // set by gen_stmt when processing a raise expression
-    std::string last_inlined_concrete_type_;  // concrete type from most recent inlined call
+    bool current_stmt_raise_ = false;
+
+    // ==================== Generics Infrastructure ====================
+    // Generic function registry: stores FnDecls that have type_params
+    std::map<std::string, FnDecl> generic_fn_decls_;
+    // Generic type registry: stores TypeDecls that have type_params
+    std::map<std::string, TypeDecl> generic_type_decls_;
+    // Monomorphization cache for functions: "Max__int" -> Function*
+    std::map<std::string, llvm::Function*> monomorphized_fns_;
+    // Monomorphization cache for types: "Pair__int__string" -> StructType*
+    std::map<std::string, llvm::StructType*> monomorphized_types_;
+    // Reverse map: monomorphized StructType* -> vector of type args
+    std::map<llvm::StructType*, std::vector<llvm::Type*>> type_struct_to_args_;
+    // Active type substitution map during monomorphization body codegen
+    std::map<std::string, llvm::Type*> current_type_subst_;
+
+    // Helper: compute mangled name for generic instantiation
+    std::string mangle_generic(const std::string& base_name,
+                               const std::vector<llvm::Type*>& type_args) {
+        std::string result = base_name;
+        for (auto* t : type_args) {
+            result += "__";
+            if (t->isIntegerTy(64)) result += "int";
+            else if (t->isIntegerTy(1)) result += "bool";
+            else if (t->isDoubleTy()) result += "float";
+            else if (t->isPointerTy()) result += "ptr";
+            else if (t->isStructTy()) {
+                result += llvm::cast<llvm::StructType>(t)->getStructName().str();
+            } else {
+                result += "T";
+            }
+        }
+        return result;
+    }
+
+    // Helper: infer type args from function call arguments
+    bool infer_type_args(FnDecl& fn_decl,
+                         const std::vector<llvm::Type*>& arg_types,
+                         std::vector<llvm::Type*>& resolved_type_args) {
+        // Build param_name -> type_param_index mapping
+        std::map<std::string, size_t> param_to_tp;
+        for (size_t i = 0; i < fn_decl.type_params.size(); i++) {
+            param_to_tp[fn_decl.type_params[i]] = i;
+        }
+        resolved_type_args.resize(fn_decl.type_params.size(), nullptr);
+
+        for (size_t i = 0; i < fn_decl.params.size() && i < arg_types.size(); i++) {
+            auto& param_type = fn_decl.params[i].type;
+            if (param_type->kind == TypeKind::TYPE_PARAM) {
+                auto it = param_to_tp.find(param_type->name);
+                if (it != param_to_tp.end()) {
+                    resolved_type_args[it->second] = arg_types[i];
+                }
+            } else if (param_type->kind == TypeKind::POINTER &&
+                       param_type->inner && param_type->inner->kind == TypeKind::TYPE_PARAM) {
+                auto it = param_to_tp.find(param_type->inner->name);
+                if (it != param_to_tp.end()) {
+                    resolved_type_args[it->second] = llvm::PointerType::get(*context_, 0);
+                }
+            } else if (param_type->kind == TypeKind::NAMED &&
+                       !param_type->type_args.empty()) {
+                // Handle generic struct params like Pair[T]
+                llvm::Type* arg_ty = arg_types[i];
+                llvm::StructType* arg_struct = nullptr;
+                if (arg_ty->isStructTy()) {
+                    arg_struct = llvm::cast<llvm::StructType>(arg_ty);
+                }
+                if (arg_struct) {
+                    auto args_it = type_struct_to_args_.find(arg_struct);
+                    if (args_it != type_struct_to_args_.end()) {
+                        auto& concrete_args = args_it->second;
+                        // Map type_args of the param type to concrete args
+                        for (size_t ta = 0; ta < param_type->type_args.size() && ta < concrete_args.size(); ta++) {
+                            auto& ta_type = param_type->type_args[ta];
+                            if (ta_type->kind == TypeKind::TYPE_PARAM) {
+                                auto tp_it = param_to_tp.find(ta_type->name);
+                                if (tp_it != param_to_tp.end()) {
+                                    resolved_type_args[tp_it->second] = concrete_args[ta];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check all type params were resolved
+        for (size_t i = 0; i < resolved_type_args.size(); i++) {
+            if (!resolved_type_args[i]) return false;
+        }
+        return true;
+    }
+
+    // Helper: convert explicit type annotation to LLVM type
+    llvm::Type* resolve_type_arg(TypeAnnotation& ta) {
+        if (ta.kind == TypeKind::TYPE_PARAM) {
+            auto it = current_type_subst_.find(ta.name);
+            if (it != current_type_subst_.end()) return it->second;
+        }
+        return resolve_type(ta);
+    }
+
+    llvm::Function* monomorphize_fn(const std::string& fn_name,
+                                     std::vector<llvm::Type*>& type_args);
+    llvm::StructType* monomorphize_type(const std::string& type_name,
+                                         std::vector<llvm::Type*>& type_args);
 
     std::vector<std::string> errors_;
 
-    llvm::StructType* string_type_ = nullptr;  // cached fat string type {ptr, len}
+    llvm::StructType* string_type_ = nullptr;
 
     void error(const std::string& msg) {
         errors_.push_back(msg);
@@ -110,9 +219,7 @@ public:
             LLVMInitializeX86AsmParser();
             LLVMInitializeX86AsmPrinter();
         }
-        // AArch64 init requires linking armcodegen/armasmparser libs
 
-        // Create the fat string type: {ptr, len}
         string_type_ = llvm::StructType::create(*context_, "binar.string");
         string_type_->setBody({llvm::PointerType::get(*context_, 0),
                                llvm::IntegerType::get(*context_, config_.types.int_width)});
@@ -125,7 +232,6 @@ public:
     void gen_decl(Decl& decl);
     void gen_fn_decl(FnDecl& fn);
     void gen_type_decl(TypeDecl& td);
-    void gen_iface_decl(InterfaceDecl& id);
     void gen_stmt(Stmt& stmt);
     bool generate_lazy(const std::string& package, const std::string& file);
     llvm::Value* gen_expr(Expr& expr);
@@ -134,20 +240,33 @@ public:
     void gen_entry_point();
     llvm::StructType* find_struct_type(const std::string& name);
     std::string extract_type_name(TypeAnnotation* type);
-    llvm::Function* gen_monomorphized_fn(const std::string& base_name,
-                                          const std::string& concrete_type,
-                                          FnDecl& original_fn);
-    std::string infer_concrete_type(Expr* arg_expr);
     void emit_raise_check(llvm::Value* result);
     void emit_deferred();
     void emit_exit_code(llvm::Value* code);
-    llvm::Value* gen_inline_call(FnDecl& fn, std::vector<llvm::Value*>& args, bool is_raise);
+
+    // Tagged union infrastructure
+    void collect_tu_info(Program& program);
+    void discover_structural_implementations(Program& program);
+    void discover_error_types(Program& program);
+    void create_tu_types();
+    llvm::StructType* create_tu_type(const std::string& name, uint64_t max_buf_size);
+    llvm::Value* wrap_in_tu(llvm::Value* concrete_alloca, llvm::StructType* concrete_type,
+                             llvm::StructType* tu_type, int tag);
+    llvm::Value* ensure_in_tu(llvm::Value* val, llvm::Type* expected_type);
+    bool is_tu_type(llvm::Type* ty);
+    int find_error_tag(const std::string& type_name);
+    int find_structural_tag(const std::string& structural_name, const std::string& type_name);
+    uint64_t compute_struct_size(llvm::StructType* sty);
+    llvm::Value* gen_structural_dispatch(const std::string& structural_name, const std::string& method_name,
+                                    llvm::Value* tu_val, std::vector<llvm::Value*>& args,
+                                    llvm::Type* result_type);
 };
 
 Codegen::Codegen(const CompilerConfig& cfg) : impl_(std::make_unique<CodegenImpl>(cfg)) {}
 Codegen::~Codegen() = default;
 
 bool Codegen::generate(Program& program, const std::string& filename) {
+    impl_->collect_tu_info(program);
     for (auto& decl : program.decls) {
         impl_->gen_decl(decl);
     }
@@ -238,15 +357,628 @@ bool Codegen::emit_ir(const std::string& output) {
     return true;
 }
 
+// ==================== Tagged Union Infrastructure ====================
+
+uint64_t CodegenImpl::compute_struct_size(llvm::StructType* sty) {
+    uint64_t size = 0;
+    for (unsigned i = 0; i < sty->getNumElements(); i++) {
+        llvm::Type* elem = sty->getElementType(i);
+        uint64_t elem_size = 0;
+        if (elem->isIntegerTy(64) || elem->isDoubleTy()) elem_size = 8;
+        else if (elem->isIntegerTy(32)) elem_size = 4;
+        else if (elem->isIntegerTy(8) || elem->isIntegerTy(1)) elem_size = 1;
+        else if (elem->isPointerTy()) elem_size = 8;
+        else if (elem->isStructTy()) elem_size = compute_struct_size(llvm::cast<llvm::StructType>(elem));
+        else elem_size = 8;
+        size = (size + 7) & ~7ULL;
+        size += elem_size;
+    }
+    size = (size + 7) & ~7ULL;
+    return size;
+}
+
+llvm::StructType* CodegenImpl::create_tu_type(const std::string& name, uint64_t max_buf_size) {
+    if (max_buf_size == 0) max_buf_size = 1;
+    llvm::Type* tag_type = llvm::Type::getInt32Ty(*context_);
+    llvm::Type* buffer_type = llvm::ArrayType::get(llvm::Type::getInt8Ty(*context_), max_buf_size);
+    llvm::StructType* tu_type = llvm::StructType::create(*context_, name);
+    tu_type->setBody({tag_type, buffer_type});
+    return tu_type;
+}
+
+bool CodegenImpl::is_tu_type(llvm::Type* ty) {
+    if (ty == error_tu_type_) return true;
+    for (auto& [name, tt] : structural_tu_types_) {
+        if (ty == tt) return true;
+    }
+    return false;
+}
+
+int CodegenImpl::find_error_tag(const std::string& type_name) {
+    for (auto& impl : error_impls_) {
+        if (impl.type_name == type_name) return impl.tag;
+    }
+    return -1;
+}
+
+int CodegenImpl::find_structural_tag(const std::string& structural_name, const std::string& type_name) {
+    auto it = structural_impls_reg_.find(structural_name);
+    if (it == structural_impls_reg_.end()) return -1;
+    for (auto& impl : it->second) {
+        if (impl.type_name == type_name) return impl.tag;
+    }
+    return -1;
+}
+
+void CodegenImpl::discover_structural_implementations(Program& program) {
+    for (auto& [structural_name, methods] : structural_methods_) {
+        std::vector<TuImpl> impls;
+        int tag = 1;  // tag 0 reserved for nil
+
+        // Scan free functions: find types whose methods match the structural interface
+        for (auto& decl : program.decls) {
+            if (decl.kind != DeclKind::FN) continue;
+            if (decl.fn.params.empty()) continue;
+            // Skip functions whose first param is itself a structural type
+            if (decl.fn.params[0].type->kind == TypeKind::STRUCTURAL) continue;
+            std::string first_type = extract_type_name(decl.fn.params[0].type.get());
+            if (first_type.empty()) continue;
+            // Strip pointer prefix for lookup
+            if (first_type.size() > 1 && first_type[0] == '*') {
+                first_type = first_type.substr(1);
+            }
+
+            bool already_added = false;
+            for (auto& impl : impls) {
+                if (impl.type_name == first_type) { already_added = true; break; }
+            }
+            if (already_added) continue;
+
+            for (auto& pm : methods) {
+                if (decl.fn.name == pm.name && decl.fn.params.size() >= 1) {
+                    auto sit = struct_types_.find(first_type);
+                    if (sit != struct_types_.end()) {
+                        uint64_t sz = compute_struct_size(sit->second);
+                        impls.push_back({first_type, tag++, sit->second, sz});
+                    }
+                    break;
+                }
+            }
+        }
+        structural_impls_reg_[structural_name] = std::move(impls);
+    }
+}
+
+void CodegenImpl::discover_error_types(Program& program) {
+    int tag = 1;  // tag 0 is reserved for nil
+    for (auto& decl : program.decls) {
+        if (decl.kind != DeclKind::FN) continue;
+        bool returns_error = false;
+        for (auto& rt : decl.fn.return_types) {
+            if (rt->name == "error") { returns_error = true; break; }
+        }
+        if (!returns_error) continue;
+
+        for (auto& stmt : decl.fn.body) {
+            if (stmt->kind == StmtKind::RETURN) {
+                auto check_expr = [&](ExprPtr& e) {
+                    if (e && e->kind == ExprKind::STRUCT_LITERAL) {
+                        std::string type_name = e->struct_literal.type_name;
+                        bool found = false;
+                        for (auto& impl : error_impls_) {
+                            if (impl.type_name == type_name) { found = true; break; }
+                        }
+                        if (!found) {
+                            auto sit = struct_types_.find(type_name);
+                            if (sit != struct_types_.end()) {
+                                uint64_t sz = compute_struct_size(sit->second);
+                                error_impls_.push_back({type_name, tag++, sit->second, sz});
+                            }
+                        }
+                    }
+                };
+                if (!stmt->return_values.empty()) {
+                    for (auto& rv : stmt->return_values) check_expr(rv);
+                } else if (stmt->expr) {
+                    check_expr(stmt->expr);
+                }
+            } else if (stmt->kind == StmtKind::IF) {
+                for (auto& branch : stmt->if_stmt.branches) {
+                    for (auto& s : branch.body) {
+                        if (s->kind == StmtKind::RETURN) {
+                            auto check_e = [&](ExprPtr& e) {
+                                if (e && e->kind == ExprKind::STRUCT_LITERAL) {
+                                    std::string tn = e->struct_literal.type_name;
+                                    bool found = false;
+                                    for (auto& im : error_impls_) {
+                                        if (im.type_name == tn) { found = true; break; }
+                                    }
+                                    if (!found) {
+                                        auto si = struct_types_.find(tn);
+                                        if (si != struct_types_.end()) {
+                                            uint64_t sz = compute_struct_size(si->second);
+                                            error_impls_.push_back({tn, tag++, si->second, sz});
+                                        }
+                                    }
+                                }
+                            };
+                            if (!s->return_values.empty()) {
+                                for (auto& rv : s->return_values) check_e(rv);
+                            } else if (s->expr) {
+                                check_e(s->expr);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void CodegenImpl::create_tu_types() {
+    uint64_t max_error_size = 0;
+    for (auto& impl : error_impls_) {
+        if (impl.struct_size > max_error_size) max_error_size = impl.struct_size;
+    }
+    error_tu_type_ = create_tu_type("error.tu", max_error_size > 0 ? max_error_size : 8);
+
+    for (auto& [structural_name, impls] : structural_impls_reg_) {
+        uint64_t max_size = 0;
+        for (auto& impl : impls) {
+            if (impl.struct_size > max_size) max_size = impl.struct_size;
+        }
+        structural_tu_types_[structural_name] = create_tu_type(structural_name + ".tu", max_size > 0 ? max_size : 8);
+    }
+}
+
+void CodegenImpl::collect_tu_info(Program& program) {
+    // First: scan all functions for ~TypeName parameters to register structural type names
+    for (auto& decl : program.decls) {
+        if (decl.kind != DeclKind::FN) continue;
+        for (auto& param : decl.fn.params) {
+            if (param.type->kind == TypeKind::STRUCTURAL) {
+                structural_names_.insert(param.type->name);
+            } else if (param.type->kind == TypeKind::POINTER &&
+                       param.type->inner &&
+                       param.type->inner->kind == TypeKind::STRUCTURAL) {
+                structural_names_.insert(param.type->inner->name);
+            }
+        }
+    }
+
+    // Second: for each structural name, scan function bodies to discover required methods
+    // We look for method calls on structural parameters: param.Method(...) or (*param).Method(...)
+    for (auto& decl : program.decls) {
+        if (decl.kind != DeclKind::FN) continue;
+        for (auto& param : decl.fn.params) {
+            std::string structural_name;
+            if (param.type->kind == TypeKind::STRUCTURAL) {
+                structural_name = param.type->name;
+            } else if (param.type->kind == TypeKind::POINTER &&
+                       param.type->inner &&
+                       param.type->inner->kind == TypeKind::STRUCTURAL) {
+                structural_name = param.type->inner->name;
+            }
+            if (structural_name.empty()) continue;
+
+            // Scan body for method calls on this parameter
+            for (auto& stmt : decl.fn.body) {
+                if (stmt->kind != StmtKind::EXPR || !stmt->expr) continue;
+                if (stmt->expr->kind != ExprKind::CALL) continue;
+                auto& call = stmt->expr->call;
+                if (!call.callee || call.callee->kind != ExprKind::DOT_ACCESS) continue;
+                auto& dot = call.callee->dot;
+                if (!dot.object || dot.object->kind != ExprKind::IDENT) continue;
+                if (dot.object->ident != param.name) continue;
+
+                std::string method_name = dot.field;
+
+                // Check if method already registered
+                bool found = false;
+                for (auto& existing : structural_methods_[structural_name]) {
+                    if (existing.name == method_name) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    StructuralMethodInfo mi;
+                    mi.name = method_name;
+                    mi.is_pointer = false;
+                    mi.param_type = "";
+                    structural_methods_[structural_name].push_back(mi);
+                }
+            }
+        }
+    }
+
+    for (auto& decl : program.decls) {
+        if (decl.kind == DeclKind::TYPE) {
+            gen_type_decl(decl.type_decl);
+        }
+    }
+
+    discover_structural_implementations(program);
+    discover_error_types(program);
+    create_tu_types();
+}
+
+llvm::Value* CodegenImpl::wrap_in_tu(llvm::Value* concrete_alloca, llvm::StructType* concrete_type,
+                                       llvm::StructType* tu_type, int tag) {
+    llvm::Value* tu_alloca = builder_->CreateAlloca(tu_type, nullptr, "tu.tmp");
+
+    llvm::Value* tag_ptr = builder_->CreateGEP(tu_type, tu_alloca,
+        {llvm::ConstantInt::get(*context_, llvm::APInt(32, 0)),
+         llvm::ConstantInt::get(*context_, llvm::APInt(32, 0))}, "tu.tag.ptr");
+    builder_->CreateStore(llvm::ConstantInt::get(*context_, llvm::APInt(32, tag)), tag_ptr);
+
+    llvm::Value* buf_ptr = builder_->CreateGEP(tu_type, tu_alloca,
+        {llvm::ConstantInt::get(*context_, llvm::APInt(32, 0)),
+         llvm::ConstantInt::get(*context_, llvm::APInt(32, 1))}, "tu.buf.ptr");
+
+    llvm::Type* i8ptr = llvm::PointerType::get(*context_, 0);
+    llvm::Value* src = builder_->CreateBitCast(concrete_alloca, i8ptr, "tu.src");
+    llvm::Value* dst = builder_->CreateBitCast(buf_ptr, i8ptr, "tu.dst");
+    const llvm::DataLayout& dl = module_->getDataLayout();
+    uint64_t size = dl.getTypeStoreSize(concrete_type);
+    builder_->CreateMemCpy(dst, llvm::MaybeAlign(1), src, llvm::MaybeAlign(1), size);
+
+    return builder_->CreateLoad(tu_type, tu_alloca, "tu.val");
+}
+
+llvm::Value* CodegenImpl::ensure_in_tu(llvm::Value* val, llvm::Type* expected_type) {
+    if (!val) {
+        return llvm::Constant::getNullValue(expected_type);
+    }
+    llvm::Type* val_type = val->getType();
+    if (val_type == expected_type) return val;
+
+    if (expected_type->isPointerTy() && val_type->isPointerTy()) return val;
+
+    llvm::StructType* tu_type = llvm::cast<llvm::StructType>(expected_type);
+
+    if (val_type->isPointerTy() && llvm::isa<llvm::ConstantPointerNull>(val)) {
+        return llvm::Constant::getNullValue(tu_type);
+    }
+
+    llvm::StructType* concrete_type = nullptr;
+    std::string concrete_name;
+
+    if (val_type->isStructTy() && val_type != tu_type) {
+        concrete_type = llvm::cast<llvm::StructType>(val_type);
+        concrete_name = strip_struct_prefix(concrete_type->getStructName().str());
+    } else if (val_type->isPointerTy()) {
+        auto vsti = value_struct_type_.find(val);
+        if (vsti != value_struct_type_.end() && vsti->second != tu_type) {
+            concrete_type = vsti->second;
+            concrete_name = strip_struct_prefix(concrete_type->getStructName().str());
+            val = builder_->CreateLoad(concrete_type, val, "tu.deref");
+        } else if (auto* alloca = llvm::dyn_cast<llvm::AllocaInst>(val)) {
+            llvm::Type* pointee = alloca->getAllocatedType();
+            if (pointee->isStructTy() && pointee != tu_type) {
+                concrete_type = llvm::cast<llvm::StructType>(pointee);
+                concrete_name = strip_struct_prefix(concrete_type->getStructName().str());
+                val = builder_->CreateLoad(concrete_type, alloca, "tu.deref");
+            }
+        }
+    }
+
+    if (concrete_type) {
+        int tag = 0;
+        if (tu_type == error_tu_type_) {
+            tag = find_error_tag(concrete_name);
+            if (tag < 0) tag = 0;
+        } else {
+            for (auto& [sname, stt] : structural_tu_types_) {
+                if (stt == tu_type) {
+                    tag = find_structural_tag(sname, concrete_name);
+                    if (tag < 0) tag = 0;
+                    break;
+                }
+            }
+        }
+
+        llvm::AllocaInst* concrete_alloca = builder_->CreateAlloca(concrete_type, nullptr, "wrap.tmp");
+        builder_->CreateStore(val, concrete_alloca);
+        return wrap_in_tu(concrete_alloca, concrete_type, tu_type, tag);
+    }
+
+    return llvm::Constant::getNullValue(tu_type);
+}
+
+llvm::Value* CodegenImpl::gen_structural_dispatch(const std::string& structural_name,
+                                             const std::string& method_name,
+                                             llvm::Value* tu_val,
+                                             std::vector<llvm::Value*>& args,
+                                             llvm::Type* result_type) {
+    auto structural_it = structural_tu_types_.find(structural_name);
+    if (structural_it == structural_tu_types_.end()) {
+        error("unknown structural type '" + structural_name + "'");
+        return llvm::ConstantInt::get(*context_, llvm::APInt(64, 0));
+    }
+    llvm::StructType* tu_type = structural_it->second;
+
+    auto impl_it = structural_impls_reg_.find(structural_name);
+    if (impl_it == structural_impls_reg_.end() || impl_it->second.empty()) {
+        error("no implementations for structural type '" + structural_name + "'");
+        return llvm::ConstantInt::get(*context_, llvm::APInt(64, 0));
+    }
+
+    llvm::Function* caller_fn = builder_->GetInsertBlock()->getParent();
+    llvm::Value* tu_alloca = builder_->CreateAlloca(tu_type, nullptr, "dispatch.tu");
+    builder_->CreateStore(tu_val, tu_alloca);
+
+    llvm::Value* tag_ptr = builder_->CreateGEP(tu_type, tu_alloca,
+        {llvm::ConstantInt::get(*context_, llvm::APInt(32, 0)),
+         llvm::ConstantInt::get(*context_, llvm::APInt(32, 0))}, "dispatch.tag.ptr");
+    llvm::Value* tag = builder_->CreateLoad(llvm::Type::getInt32Ty(*context_), tag_ptr, "dispatch.tag");
+
+    llvm::BasicBlock* default_bb = llvm::BasicBlock::Create(*context_, "dispatch.default", caller_fn);
+    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(*context_, "dispatch.merge", caller_fn);
+
+    llvm::SwitchInst* sw = builder_->CreateSwitch(tag, default_bb, impl_it->second.size());
+
+    std::vector<std::pair<llvm::Value*, llvm::BasicBlock*>> results;
+
+    for (auto& impl : impl_it->second) {
+        llvm::BasicBlock* case_bb = llvm::BasicBlock::Create(*context_, "dispatch.case." + impl.type_name, caller_fn);
+        sw->addCase(llvm::ConstantInt::get(*context_, llvm::APInt(32, impl.tag)), case_bb);
+
+        builder_->SetInsertPoint(case_bb);
+
+        llvm::Value* buf_ptr = builder_->CreateGEP(tu_type, tu_alloca,
+            {llvm::ConstantInt::get(*context_, llvm::APInt(32, 0)),
+             llvm::ConstantInt::get(*context_, llvm::APInt(32, 1))}, "dispatch.buf");
+
+        llvm::Value* concrete_ptr;
+        if (args.size() > 0 && args[0]->getType()->isPointerTy()) {
+            concrete_ptr = builder_->CreateBitCast(buf_ptr, args[0]->getType(), "dispatch.concrete.ptr");
+        } else {
+            concrete_ptr = buf_ptr;
+        }
+
+        if (impl.struct_type->getNumElements() > 0 || impl.struct_type->getStructName().str().find("void") != std::string::npos) {
+
+            std::string mangled = method_name + "__" + impl.type_name;
+            llvm::Function* method_fn = module_->getFunction(mangled);
+            if (!method_fn) {
+                method_fn = module_->getFunction(method_name);
+            }
+            if (!method_fn) {
+                for (auto& decl_fn : pending_files_) {
+                    for (auto& [fname, pf] : decl_fn.second) {
+                        for (auto& d : pf.program.decls) {
+                            if (d.kind == DeclKind::FN && d.fn.name == method_name) {
+                                if (!d.fn.params.empty()) {
+                                    std::string ptype = extract_type_name(d.fn.params[0].type.get());
+                                    if (!ptype.empty() && ptype[0] == '*') ptype = ptype.substr(1);
+                                    if (ptype == impl.type_name) {
+                                        std::string lazy_name = fname + "." + method_name;
+                                        method_fn = module_->getFunction(lazy_name);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (method_fn) break;
+                    }
+                    if (method_fn) break;
+                }
+            }
+            if (!method_fn && !current_file_.empty()) {
+                method_fn = module_->getFunction(current_file_ + "." + mangled);
+                if (!method_fn) {
+                    method_fn = module_->getFunction(current_file_ + "." + method_name);
+                }
+            }
+
+            llvm::Value* concrete_arg;
+            bool method_expects_ptr = method_fn && method_fn->arg_size() > 0 &&
+                method_fn->getArg(0)->getType()->isPointerTy();
+            if (method_expects_ptr) {
+                concrete_ptr = builder_->CreateBitCast(buf_ptr, method_fn->getArg(0)->getType(), "dispatch.concrete.ptr");
+                concrete_arg = concrete_ptr;
+            } else {
+                concrete_arg = builder_->CreateLoad(impl.struct_type, concrete_ptr, "dispatch.concrete");
+            }
+
+            if (method_fn) {
+                std::vector<llvm::Value*> call_args;
+                call_args.push_back(concrete_arg);
+                for (size_t i = 1; i < args.size(); i++) {
+                    call_args.push_back(args[i]);
+                }
+
+                llvm::Value* call_result;
+                if (method_fn->getReturnType()->isVoidTy()) {
+                    call_result = builder_->CreateCall(method_fn, call_args);
+                } else {
+                    call_result = builder_->CreateCall(method_fn, call_args, "dispatch.call");
+                }
+                results.push_back({call_result, case_bb});
+            } else {
+                results.push_back({llvm::ConstantInt::get(*context_, llvm::APInt(64, 0)), case_bb});
+            }
+        } else {
+            results.push_back({llvm::ConstantInt::get(*context_, llvm::APInt(64, 0)), case_bb});
+        }
+
+        builder_->CreateBr(merge_bb);
+    }
+
+    builder_->SetInsertPoint(default_bb);
+    builder_->CreateUnreachable();
+
+    builder_->SetInsertPoint(merge_bb);
+
+    if (result_type->isVoidTy()) {
+        return nullptr;
+    }
+
+    llvm::PHINode* phi = builder_->CreatePHI(result_type, results.size(), "dispatch.result");
+    for (auto& [r, bb] : results) {
+        phi->addIncoming(r, bb);
+    }
+    return phi;
+}
+
+// ==================== Monomorphization ====================
+
+llvm::Function* CodegenImpl::monomorphize_fn(const std::string& fn_name,
+                                              std::vector<llvm::Type*>& type_args) {
+    // Build mangled name
+    std::string mangled = mangle_generic(fn_name, type_args);
+
+    // Check cache
+    auto cache_it = monomorphized_fns_.find(mangled);
+    if (cache_it != monomorphized_fns_.end()) {
+        return cache_it->second;
+    }
+
+    // Look up generic decl
+    auto decl_it = generic_fn_decls_.find(fn_name);
+    if (decl_it == generic_fn_decls_.end()) {
+        error("unknown generic function '" + fn_name + "'");
+        return nullptr;
+    }
+
+    // We need a mutable copy to set up substitution — but FnDecl has StmtPtrs (unique_ptr)
+    // Use a thread-local static workaround: store the decl reference and the subst map
+    FnDecl& fn_decl = decl_it->second;
+
+    // Build substitution map
+    auto saved_subst = current_type_subst_;
+    for (size_t i = 0; i < fn_decl.type_params.size() && i < type_args.size(); i++) {
+        current_type_subst_[fn_decl.type_params[i]] = type_args[i];
+    }
+
+    // Resolve parameter types with substitution
+    std::vector<llvm::Type*> param_types;
+    for (auto& param : fn_decl.params) {
+        param_types.push_back(resolve_type(*param.type));
+    }
+
+    // Resolve return types
+    llvm::Type* return_type;
+    bool is_multi_return = fn_decl.return_types.size() > 1;
+    if (is_multi_return) {
+        std::vector<llvm::Type*> ret_field_types;
+        for (auto& rt : fn_decl.return_types) {
+            ret_field_types.push_back(resolve_type(*rt));
+        }
+        return_type = llvm::StructType::get(*context_, ret_field_types, true);
+    } else if (fn_decl.return_types.empty()) {
+        return_type = llvm::Type::getVoidTy(*context_);
+    } else {
+        return_type = resolve_type(*fn_decl.return_types[0]);
+    }
+
+    // Save state BEFORE creating the new function
+    auto saved_fn = current_fn_;
+    auto saved_named = named_values_;
+    auto saved_insert_block = builder_->GetInsertBlock();
+    auto saved_struct_types = named_struct_types_;
+
+    llvm::FunctionType* fn_type = llvm::FunctionType::get(return_type, param_types, false);
+    std::string llvm_fn_name = current_file_.empty() ? mangled : current_file_ + "." + mangled;
+    llvm::Function* func = llvm::Function::Create(
+        fn_type, llvm::Function::ExternalLinkage, llvm_fn_name, module_.get());
+
+    // Create entry block and codegen body
+    llvm::BasicBlock* entry = llvm::BasicBlock::Create(*context_, "entry", func);
+    builder_->SetInsertPoint(entry);
+    current_fn_ = func;
+
+    // Map params to allocas
+    for (size_t i = 0; i < fn_decl.params.size(); i++) {
+        llvm::AllocaInst* alloca = builder_->CreateAlloca(param_types[i], nullptr, fn_decl.params[i].name);
+        builder_->CreateStore(func->getArg(i), alloca);
+        named_values_[fn_decl.params[i].name] = alloca;
+    }
+
+    // Codegen body
+    for (auto& stmt : fn_decl.body) {
+        gen_stmt(*stmt);
+    }
+
+    // Add return if body doesn't end with one
+    if (builder_->GetInsertBlock()->getTerminator() == nullptr) {
+        if (return_type->isVoidTy()) {
+            builder_->CreateRetVoid();
+        } else {
+            builder_->CreateRet(llvm::Constant::getNullValue(return_type));
+        }
+    }
+
+    // Restore state
+    current_fn_ = saved_fn;
+    named_values_ = saved_named;
+    current_type_subst_ = saved_subst;
+    named_struct_types_ = saved_struct_types;
+    if (saved_insert_block) {
+        builder_->SetInsertPoint(saved_insert_block);
+    }
+
+    monomorphized_fns_[mangled] = func;
+    return func;
+}
+
+llvm::StructType* CodegenImpl::monomorphize_type(const std::string& type_name,
+                                                  std::vector<llvm::Type*>& type_args) {
+    std::string mangled = mangle_generic(type_name, type_args);
+
+    auto cache_it = monomorphized_types_.find(mangled);
+    if (cache_it != monomorphized_types_.end()) {
+        return cache_it->second;
+    }
+
+    auto decl_it = generic_type_decls_.find(type_name);
+    if (decl_it == generic_type_decls_.end()) {
+        error("unknown generic type '" + type_name + "'");
+        return nullptr;
+    }
+
+    TypeDecl& type_decl = decl_it->second;
+
+    // Build substitution map
+    auto saved_subst = current_type_subst_;
+    for (size_t i = 0; i < type_decl.type_params.size() && i < type_args.size(); i++) {
+        current_type_subst_[type_decl.type_params[i]] = type_args[i];
+    }
+
+    // Build field types
+    std::vector<llvm::Type*> field_types;
+    std::vector<std::string> field_names;
+    for (auto& field : type_decl.fields) {
+        field_types.push_back(resolve_type(*field.type));
+        field_names.push_back(field.name);
+    }
+
+    current_type_subst_ = saved_subst;
+
+    if (field_types.empty()) {
+        field_types.push_back(llvm::Type::getInt8Ty(*context_));
+    }
+
+    llvm::StructType* stype = llvm::StructType::get(*context_, field_types, false);
+    stype->setName(mangled);
+
+    struct_types_[mangled] = stype;
+    struct_fields_[mangled] = field_names;
+
+    monomorphized_types_[mangled] = stype;
+    type_struct_to_args_[stype] = type_args;
+    return stype;
+}
+
 // ==================== CodegenImpl ====================
 
 void CodegenImpl::gen_decl(Decl& decl) {
     switch (decl.kind) {
         case DeclKind::FN: gen_fn_decl(decl.fn); break;
-        case DeclKind::TYPE: gen_type_decl(decl.type_decl); break;
-        case DeclKind::IFACE: gen_iface_decl(decl.iface_decl); break;
-        case DeclKind::CONST: {
-            auto& cd = decl.const_decl;
+        case DeclKind::TYPE: break;
+        case DeclKind::CONSTANT: {
+            auto& cd = decl.constant_decl;
             if (cd.value) {
                 llvm::Value* val = gen_expr(*cd.value);
                 if (current_fn_) {
@@ -255,6 +987,16 @@ void CodegenImpl::gen_decl(Decl& decl) {
                     named_values_[cd.name] = alloca;
                 } else {
                     const_values_[cd.name] = val;
+                }
+            }
+            break;
+        }
+        case DeclKind::GLOBAL_VAR: {
+            auto& gvd = decl.global_var_decl;
+            if (gvd.value) {
+                llvm::Value* val = gen_expr(*gvd.value);
+                if (val) {
+                    const_values_[gvd.name] = val;
                 }
             }
             break;
@@ -274,28 +1016,13 @@ void CodegenImpl::gen_decl(Decl& decl) {
 void CodegenImpl::gen_fn_decl(FnDecl& fn) {
     if (!fn.has_body) return;
 
-    // Check if any param has an interface type — if so, store for monomorphization
-    bool has_iface_param = false;
-    for (auto& param : fn.params) {
-        std::string pname = extract_type_name(param.type.get());
-        if (!pname.empty() && interface_names_.count(pname) > 0) {
-            has_iface_param = true;
-            break;
-        }
-    }
-    if (has_iface_param) {
-        iface_fn_decls_.emplace(fn.name, std::move(fn));
+    // Generic functions: store in registry, don't codegen immediately
+    if (!fn.type_params.empty()) {
+        generic_fn_decls_[fn.name] = std::move(fn);
         return;
     }
 
-    // Interface-returning functions with single return are never emitted as standalone LLVM functions.
-    // Their body is inlined at every call site instead.
-    // Multi-return interface functions are compiled normally.
-    // Exception: main() is always compiled normally since _start calls it directly.
-    if (fn.is_interface_returning && fn.return_types.size() == 1 && fn.name != "main") {
-        iface_returning_decls_[fn.name] = &fn;
-        return;
-    }
+    structural_param_types_.clear();
 
     std::vector<llvm::Type*> param_types;
     for (auto& param : fn.params) {
@@ -339,6 +1066,12 @@ void CodegenImpl::gen_fn_decl(FnDecl& fn) {
         llvm::AllocaInst* alloca = builder_->CreateAlloca(ptype, nullptr, param.name);
         builder_->CreateStore(func->getArg(idx), alloca);
         named_values_[param.name] = alloca;
+
+        std::string ptype_name = extract_type_name(param.type.get());
+        if (!ptype_name.empty() && structural_names_.count(ptype_name) > 0) {
+            structural_param_types_[param.name] = ptype_name;
+        }
+
         idx++;
     }
 
@@ -368,7 +1101,8 @@ void CodegenImpl::gen_fn_decl(FnDecl& fn) {
         if (return_type->isVoidTy()) {
             builder_->CreateRetVoid();
         } else if (is_multi_return) {
-            // Return zeroed struct
+            builder_->CreateRet(llvm::Constant::getNullValue(return_type));
+        } else if (is_tu_type(return_type)) {
             builder_->CreateRet(llvm::Constant::getNullValue(return_type));
         } else if (return_type->isPointerTy()) {
             builder_->CreateRet(llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(return_type)));
@@ -378,13 +1112,16 @@ void CodegenImpl::gen_fn_decl(FnDecl& fn) {
     }
 
     current_fn_ = nullptr;
-
-    // Store function info for monomorphization
-    // We'll check during call sites if this function has interface params
     llvm::verifyFunction(*func, &llvm::errs());
 }
 
 void CodegenImpl::gen_type_decl(TypeDecl& td) {
+    // Generic types: store in registry, don't codegen immediately
+    if (!td.type_params.empty()) {
+        generic_type_decls_[td.name] = std::move(td);
+        return;
+    }
+
     std::string qualified_name = "struct." + td.name;
 
     llvm::StructType* struct_type = llvm::StructType::create(*context_, qualified_name);
@@ -409,11 +1146,6 @@ llvm::StructType* CodegenImpl::find_struct_type(const std::string& name) {
     return nullptr;
 }
 
-void CodegenImpl::gen_iface_decl(InterfaceDecl& id) {
-    // Store interface name for monomorphization
-    interface_names_.insert(id.name);
-}
-
 bool CodegenImpl::generate_lazy(const std::string& package, const std::string& file) {
     auto pit = pending_files_.find(package);
     if (pit == pending_files_.end()) return false;
@@ -423,7 +1155,6 @@ bool CodegenImpl::generate_lazy(const std::string& package, const std::string& f
 
     fit->second.codegen_done = true;
 
-    // Save and restore context so caller's context is preserved
     std::string saved_package = current_package_;
     std::string saved_file = current_file_;
     llvm::Function* saved_fn = current_fn_;
@@ -455,171 +1186,6 @@ std::string CodegenImpl::extract_type_name(TypeAnnotation* type) {
     }
 }
 
-llvm::Function* CodegenImpl::gen_monomorphized_fn(
-    const std::string& base_name,
-    const std::string& concrete_type,
-    FnDecl& original_fn) {
-
-    std::string mono_name = base_name + "__" + concrete_type;
-
-    // Check cache
-    if (monomorphized_fns_.count(mono_name)) {
-        return monomorphized_fns_[mono_name];
-    }
-
-    // Create new function type with concrete type replacing interface params
-    std::vector<llvm::Type*> param_types;
-    for (auto& param : original_fn.params) {
-        std::string param_type_name = extract_type_name(param.type.get());
-        bool is_iface = interface_names_.count(param_type_name) > 0;
-        if (is_iface) {
-            param_types.push_back(resolve_type_by_name(concrete_type));
-        } else {
-            param_types.push_back(resolve_type(*param.type));
-        }
-    }
-
-    // Determine return type
-    llvm::Type* return_type;
-    bool is_multi_return = original_fn.return_types.size() > 1;
-    if (is_multi_return) {
-        std::vector<llvm::Type*> ret_field_types;
-        for (auto& rt : original_fn.return_types) {
-            ret_field_types.push_back(resolve_type(*rt));
-        }
-        return_type = llvm::StructType::get(*context_, ret_field_types, true);
-    } else if (original_fn.return_types.empty()) {
-        return_type = llvm::Type::getVoidTy(*context_);
-    } else {
-        return_type = resolve_type(*original_fn.return_types[0]);
-    }
-
-    // Create the monomorphized function
-    llvm::FunctionType* fn_type = llvm::FunctionType::get(return_type, param_types, false);
-    llvm::Function* mono_func = llvm::Function::Create(
-        fn_type, llvm::Function::ExternalLinkage, mono_name, module_.get());
-
-    // Set parameter names
-    unsigned idx = 0;
-    for (auto& param : original_fn.params) {
-        mono_func->getArg(idx++)->setName(param.name);
-    }
-
-    // Save state BEFORE creating new function
-    llvm::Function* prev_fn = current_fn_;
-    llvm::BasicBlock* prev_block = builder_->GetInsertBlock();
-    auto prev_named_values = named_values_;
-    auto prev_named_struct_types = named_struct_types_;
-    auto prev_deferred = std::move(deferred_calls_);
-
-    // Create entry block
-    llvm::BasicBlock* entry = llvm::BasicBlock::Create(*context_, "entry", mono_func);
-    builder_->SetInsertPoint(entry);
-    current_fn_ = mono_func;
-    deferred_calls_.clear();
-    named_values_.clear();
-    named_struct_types_.clear();
-
-    // Allocate and store parameters
-    idx = 0;
-    for (auto& param : original_fn.params) {
-        std::string param_type_name = extract_type_name(param.type.get());
-        bool is_iface = interface_names_.count(param_type_name) > 0;
-
-        llvm::Type* ptype;
-        if (is_iface) {
-            ptype = resolve_type_by_name(concrete_type);
-        } else {
-            ptype = resolve_type(*param.type);
-        }
-
-        llvm::AllocaInst* alloca = builder_->CreateAlloca(ptype, nullptr, param.name);
-        builder_->CreateStore(mono_func->getArg(idx), alloca);
-        named_values_[param.name] = alloca;
-
-        // Track struct types for dot access
-        if (is_iface) {
-            auto sit = struct_types_.find(concrete_type);
-            if (sit != struct_types_.end()) {
-                named_struct_types_[param.name] = sit->second;
-            }
-        } else if (param.type->kind == TypeKind::NAMED) {
-            auto sit = struct_types_.find(param.type->name);
-            if (sit != struct_types_.end()) {
-                named_struct_types_[param.name] = sit->second;
-            }
-        } else if (param.type->kind == TypeKind::POINTER &&
-                   param.type->inner &&
-                   param.type->inner->kind == TypeKind::NAMED) {
-            auto sit = struct_types_.find(param.type->inner->name);
-            if (sit != struct_types_.end()) {
-                named_struct_types_[param.name] = sit->second;
-            }
-        }
-
-        idx++;
-    }
-
-    // Generate body — the original function's body with interface params resolved
-    // We need to re-generate the body with the concrete type
-    for (auto& stmt : original_fn.body) {
-        gen_stmt(*stmt);
-    }
-
-    // Add default return if no terminator
-    if (!builder_->GetInsertBlock()->getTerminator()) {
-        emit_deferred();
-        if (is_multi_return) {
-            // Zero-initialized struct
-            llvm::Type* ret_ty = mono_func->getReturnType();
-            llvm::Value* zero = llvm::Constant::getNullValue(ret_ty);
-            builder_->CreateRet(zero);
-        } else if (original_fn.return_types.empty()) {
-            builder_->CreateRetVoid();
-        } else {
-            llvm::Type* ret_ty = mono_func->getReturnType();
-            llvm::Value* zero = llvm::Constant::getNullValue(ret_ty);
-            builder_->CreateRet(zero);
-        }
-    }
-
-    // Restore state
-    current_fn_ = prev_fn;
-    named_values_ = prev_named_values;
-    named_struct_types_ = prev_named_struct_types;
-    deferred_calls_ = std::move(prev_deferred);
-    builder_->SetInsertPoint(prev_block);
-
-    // Cache the monomorphized function
-    monomorphized_fns_[mono_name] = mono_func;
-
-    return mono_func;
-}
-
-std::string CodegenImpl::infer_concrete_type(Expr* arg_expr) {
-    if (!arg_expr) return "";
-    if (arg_expr->kind == ExprKind::STRUCT_LITERAL) {
-        return arg_expr->struct_literal.type_name;
-    }
-    if (arg_expr->kind == ExprKind::IDENT) {
-        auto it = named_struct_types_.find(arg_expr->ident);
-        if (it != named_struct_types_.end()) {
-            std::string sname = strip_struct_prefix(it->second->getStructName().str());
-            return sname;
-        }
-    }
-    if (arg_expr->kind == ExprKind::UNARY && arg_expr->unary.op == UnOp::ADDR_OF) {
-        if (arg_expr->unary.operand->kind == ExprKind::IDENT) {
-            auto it = named_struct_types_.find(arg_expr->unary.operand->ident);
-            if (it != named_struct_types_.end()) {
-                std::string sname = strip_struct_prefix(it->second->getStructName().str());
-                return "*" + sname;
-            }
-        }
-    }
-    return "";
-}
-
 void CodegenImpl::gen_entry_point() {
     if (module_->getFunction(config_.entry_point.symbol.c_str())) return;
 
@@ -638,6 +1204,22 @@ void CodegenImpl::gen_entry_point() {
     if (main_fn->getReturnType()->isVoidTy()) {
         builder_->CreateCall(main_fn);
         emit_exit_code(llvm::ConstantInt::get(*context_, llvm::APInt(64, 0)));
+    } else if (is_tu_type(main_fn->getReturnType())) {
+        llvm::Value* ret = builder_->CreateCall(main_fn);
+        llvm::Value* tag = builder_->CreateExtractValue(ret, {0}, "main.tag");
+        llvm::Value* is_nil = builder_->CreateICmpEQ(tag,
+            llvm::ConstantInt::get(*context_, llvm::APInt(32, 0)), "main.is_nil");
+
+        llvm::BasicBlock* exit0_bb = llvm::BasicBlock::Create(*context_, "exit.0", start_fn);
+        llvm::BasicBlock* exit1_bb = llvm::BasicBlock::Create(*context_, "exit.1", start_fn);
+
+        builder_->CreateCondBr(is_nil, exit0_bb, exit1_bb);
+
+        builder_->SetInsertPoint(exit0_bb);
+        emit_exit_code(llvm::ConstantInt::get(*context_, llvm::APInt(64, 0)));
+
+        builder_->SetInsertPoint(exit1_bb);
+        emit_exit_code(llvm::ConstantInt::get(*context_, llvm::APInt(64, 1)));
     } else {
         llvm::Value* ret = builder_->CreateCall(main_fn);
         llvm::Value* is_nil = builder_->CreateICmpEQ(ret,
@@ -658,12 +1240,34 @@ void CodegenImpl::gen_entry_point() {
 }
 
 void CodegenImpl::emit_raise_check(llvm::Value* result) {
-    llvm::StructType* sty = llvm::cast<llvm::StructType>(result->getType());
-    unsigned n = sty->getNumElements();
-    llvm::Value* err_val = builder_->CreateExtractValue(result, {n - 1}, "raise.err");
+    llvm::Type* result_type = result->getType();
+    llvm::Value* err_val = nullptr;
+
+    if (result_type->isStructTy()) {
+        llvm::StructType* sty = llvm::cast<llvm::StructType>(result_type);
+        if (sty == error_tu_type_) {
+            err_val = result;
+        } else {
+            unsigned n = sty->getNumElements();
+            llvm::Type* last_type = sty->getElementType(n - 1);
+            if (last_type == error_tu_type_ || (last_type->isStructTy() && is_tu_type(last_type))) {
+                err_val = builder_->CreateExtractValue(result, {n - 1}, "raise.err");
+            } else if (last_type->isPointerTy()) {
+                err_val = builder_->CreateExtractValue(result, {n - 1}, "raise.err");
+            } else if (last_type->isIntegerTy(64)) {
+                err_val = builder_->CreateExtractValue(result, {n - 1}, "raise.err");
+            }
+        }
+    }
+
+    if (!err_val) return;
 
     llvm::Value* is_err;
-    if (err_val->getType()->isPointerTy()) {
+    if (err_val->getType()->isStructTy() && is_tu_type(err_val->getType())) {
+        llvm::Value* tag = builder_->CreateExtractValue(err_val, {0}, "raise.tag");
+        is_err = builder_->CreateICmpNE(tag,
+            llvm::ConstantInt::get(*context_, llvm::APInt(32, 0)), "raise.cond");
+    } else if (err_val->getType()->isPointerTy()) {
         is_err = builder_->CreateICmpNE(err_val,
             llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(err_val->getType())), "raise.cond");
     } else {
@@ -681,7 +1285,9 @@ void CodegenImpl::emit_raise_check(llvm::Value* result) {
     emit_deferred();
     llvm::Type* ret_type = fn->getReturnType();
     if (ret_type->isVoidTy()) {
-        builder_->CreateRetVoid();
+        emit_exit_code(llvm::ConstantInt::get(*context_, llvm::APInt(64, 1)));
+    } else if (is_tu_type(ret_type)) {
+        builder_->CreateRet(err_val);
     } else if (ret_type->isStructTy()) {
         llvm::StructType* ret_sty = llvm::cast<llvm::StructType>(ret_type);
         llvm::Value* ret_val = llvm::Constant::getNullValue(ret_type);
@@ -719,108 +1325,6 @@ void CodegenImpl::emit_exit_code(llvm::Value* code) {
     builder_->CreateUnreachable();
 }
 
-llvm::Value* CodegenImpl::gen_inline_call(FnDecl& fn, std::vector<llvm::Value*>& args, bool is_raise) {
-    // Save state
-    auto saved_named_values = named_values_;
-    auto saved_named_struct_types = named_struct_types_;
-    auto saved_deferred = std::move(deferred_calls_);
-    bool saved_inlining = inlining_;
-    bool saved_inlining_raise = inlining_raise_;
-    llvm::BasicBlock* saved_exit_bb = inlining_exit_bb_;
-    llvm::AllocaInst* saved_ret_alloca = inlining_ret_alloca_;
-    std::string saved_concrete_type = last_inlined_concrete_type_;
-    llvm::BasicBlock* resume_block = builder_->GetInsertBlock();
-
-    // Create parameter allocas
-    for (size_t i = 0; i < fn.params.size() && i < args.size(); i++) {
-        std::string pname = config_.constants.inline_prefix + fn.name + "_" + fn.params[i].name;
-        llvm::Type* ptype = resolve_type(*fn.params[i].type);
-        llvm::AllocaInst* alloca = builder_->CreateAlloca(ptype, nullptr, pname);
-        builder_->CreateStore(args[i], alloca);
-        named_values_[fn.params[i].name] = alloca;
-        named_struct_types_[fn.params[i].name] = named_struct_types_[fn.params[i].name];
-    }
-
-    // Set up inlining state
-    inlining_ = true;
-    inlining_raise_ = is_raise;
-
-    llvm::Function* caller_fn = builder_->GetInsertBlock()->getParent();
-
-    {
-        // Both raise and non-raise: RETURN in inlined body → branch to exit block
-        llvm::BasicBlock* exit_bb = llvm::BasicBlock::Create(*context_, is_raise ? "raise.exit" : "inline.exit", caller_fn);
-        llvm::Type* error_type = llvm::PointerType::get(*context_, 0); // error is i8*
-        llvm::AllocaInst* ret_alloca = builder_->CreateAlloca(error_type, nullptr, is_raise ? "__raise_ret" : "__inline_ret");
-        inlining_exit_bb_ = exit_bb;
-        inlining_ret_alloca_ = ret_alloca;
-    }
-
-    // Generate inlined body
-    for (auto& stmt : fn.body) {
-        gen_stmt(*stmt);
-    }
-
-    // If inlined body didn't terminate (reached end without return), it's a success path
-    if (!builder_->GetInsertBlock()->getTerminator()) {
-        // Store nil (success) and branch to exit
-        builder_->CreateStore(llvm::ConstantPointerNull::get(llvm::PointerType::get(*context_, 0)),
-                              inlining_ret_alloca_);
-        emit_deferred();
-        builder_->CreateBr(inlining_exit_bb_);
-    }
-
-    // Restore state
-    deferred_calls_ = std::move(saved_deferred);
-    inlining_ = saved_inlining;
-    inlining_raise_ = saved_inlining_raise;
-
-    llvm::Value* result = nullptr;
-    if (inlining_exit_bb_) {
-        // Position builder at exit block and load result
-        builder_->SetInsertPoint(inlining_exit_bb_);
-        llvm::Type* error_type = llvm::PointerType::get(*context_, 0);
-        result = builder_->CreateLoad(error_type, inlining_ret_alloca_, is_raise ? "__raise_ret_val" : "__inline_ret_val");
-
-        if (is_raise) {
-            // Raise: check if nil (success) or non-nil (error)
-            llvm::Value* is_nil = builder_->CreateICmpEQ(result,
-                llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(error_type)), "raise.is_nil");
-
-            llvm::BasicBlock* error_bb = llvm::BasicBlock::Create(*context_, "raise.error", caller_fn);
-            llvm::BasicBlock* cont_bb = llvm::BasicBlock::Create(*context_, "raise.cont", caller_fn);
-
-            builder_->CreateCondBr(is_nil, cont_bb, error_bb);
-
-            // Error path: return the error from the containing function
-            builder_->SetInsertPoint(error_bb);
-            llvm::Type* fn_ret_type = caller_fn->getReturnType();
-            if (fn_ret_type->isVoidTy()) {
-                emit_exit_code(llvm::ConstantInt::get(*context_, llvm::APInt(64, 1)));
-            } else if (fn_ret_type->isPointerTy()) {
-                builder_->CreateRet(result);
-            } else if (fn_ret_type->isIntegerTy(64)) {
-                builder_->CreateRet(builder_->CreatePtrToInt(result, fn_ret_type));
-            } else {
-                builder_->CreateRet(llvm::ConstantInt::get(fn_ret_type, 1));
-            }
-
-            // Continue path: execution continues after the call
-            builder_->SetInsertPoint(cont_bb);
-            result = nullptr; // Don't return result to caller; execution continues
-        }
-    }
-
-    // Restore inlining context (exit block / ret alloca) for outer inline
-    inlining_exit_bb_ = saved_exit_bb;
-    inlining_ret_alloca_ = saved_ret_alloca;
-
-    named_values_ = saved_named_values;
-    named_struct_types_ = saved_named_struct_types;
-
-    return result;
-}
-
 void CodegenImpl::gen_stmt(Stmt& stmt) {
     switch (stmt.kind) {
         case StmtKind::EXPR:
@@ -847,18 +1351,14 @@ void CodegenImpl::gen_stmt(Stmt& stmt) {
                             current_stmt_raise_ = assign.raise;
                             val = gen_expr(*assign.value);
                             current_stmt_raise_ = false;
-                            // Propagate concrete type from inlined call to variable
-                            if (!last_inlined_concrete_type_.empty()) {
-                                auto sit = struct_types_.find(last_inlined_concrete_type_);
-                                if (sit != struct_types_.end()) {
-                                    named_struct_types_[name] = sit->second;
-                                }
-                                last_inlined_concrete_type_.clear();
-                            }
                             if (val && assign.raise) {
                                 if (val->getType()->isStructTy()) {
                                     emit_raise_check(val);
-                                    val = builder_->CreateExtractValue(val, {0});
+                                    if (is_tu_type(val->getType())) {
+                                        val = nullptr;
+                                    } else {
+                                        val = builder_->CreateExtractValue(val, {0});
+                                    }
                                 }
                             }
                             ty = val ? val->getType() : llvm::Type::getInt64Ty(*context_);
@@ -881,6 +1381,12 @@ void CodegenImpl::gen_stmt(Stmt& stmt) {
                                 if (it != struct_types_.end()) {
                                     named_struct_types_[name] = it->second;
                                 }
+                                if (val) {
+                                    auto vsti = value_struct_type_.find(val);
+                                    if (vsti != value_struct_type_.end()) {
+                                        named_struct_types_[name] = vsti->second;
+                                    }
+                                }
                             } else if (assign.value && assign.value->kind == ExprKind::IDENT) {
                                 auto sit = named_struct_types_.find(assign.value->ident);
                                 if (sit != named_struct_types_.end()) {
@@ -888,24 +1394,17 @@ void CodegenImpl::gen_stmt(Stmt& stmt) {
                                 }
                             }
                         } else {
-                            // Inlined raise may continue at raise.cont; don't create unreachable
+                            llvm::BasicBlock* unreachable = llvm::BasicBlock::Create(*context_, "unreachable.after.raise", current_fn_);
+                            builder_->SetInsertPoint(unreachable);
                         }
                     } else {
                         current_stmt_raise_ = assign.raise;
                         llvm::Value* val = gen_expr(*assign.value);
                         current_stmt_raise_ = false;
-                        // Propagate concrete type from inlined call to variable
-                        if (!last_inlined_concrete_type_.empty() && assign.target->kind == ExprKind::IDENT) {
-                            auto sit = struct_types_.find(last_inlined_concrete_type_);
-                            if (sit != struct_types_.end()) {
-                                named_struct_types_[assign.target->ident] = sit->second;
-                            }
-                            last_inlined_concrete_type_.clear();
-                        }
                         if (val && assign.raise) {
                             if (val->getType()->isStructTy()) {
                                 emit_raise_check(val);
-                                val = builder_->CreateExtractValue(val, {0});
+                                val = nullptr;
                             }
                         }
                         if (!val) {
@@ -1024,120 +1523,28 @@ void CodegenImpl::gen_stmt(Stmt& stmt) {
                         }
                     }
                     if (!result) {
-                        // Inlined raise may continue at raise.cont; don't create unreachable
                     }
                 }
             }
             break;
 
         case StmtKind::RETURN:
-            if (inlining_ && !inlining_raise_) {
-                // Non-raise inlining: RETURN → branch to exit block with value
-                if (!stmt.return_values.empty()) {
-                    llvm::Value* val = gen_expr(*stmt.return_values[0]);
-                    // Capture concrete type from AST before bitcast to opaque pointer
-                    last_inlined_concrete_type_.clear();
-                    Expr* ret_expr = stmt.return_values[0].get();
-                    if (ret_expr->kind == ExprKind::STRUCT_LITERAL) {
-                        last_inlined_concrete_type_ = ret_expr->struct_literal.type_name;
-                    } else if (ret_expr->kind == ExprKind::IDENT) {
-                        auto sit = named_struct_types_.find(ret_expr->ident);
-                        if (sit != named_struct_types_.end()) {
-                            std::string sname = strip_struct_prefix(sit->second->getStructName().str());
-                            last_inlined_concrete_type_ = sname;
-                        }
-                    }
-                    val = builder_->CreateBitCast(val, llvm::PointerType::get(*context_, 0));
-                    builder_->CreateStore(val, inlining_ret_alloca_);
-                } else if (stmt.expr) {
-                    llvm::Value* val = gen_expr(*stmt.expr);
-                    last_inlined_concrete_type_.clear();
-                    Expr* ret_expr = stmt.expr.get();
-                    if (ret_expr->kind == ExprKind::STRUCT_LITERAL) {
-                        last_inlined_concrete_type_ = ret_expr->struct_literal.type_name;
-                    } else if (ret_expr->kind == ExprKind::IDENT) {
-                        auto sit = named_struct_types_.find(ret_expr->ident);
-                        if (sit != named_struct_types_.end()) {
-                            std::string sname = strip_struct_prefix(sit->second->getStructName().str());
-                            last_inlined_concrete_type_ = sname;
-                        }
-                    }
-                    val = builder_->CreateBitCast(val, llvm::PointerType::get(*context_, 0));
-                    builder_->CreateStore(val, inlining_ret_alloca_);
-                } else {
-                    // nil return
-                    last_inlined_concrete_type_.clear();
-                    builder_->CreateStore(llvm::ConstantPointerNull::get(llvm::PointerType::get(*context_, 0)),
-                                          inlining_ret_alloca_);
-                }
-                // Emit deferred calls before branching
-                emit_deferred();
-                builder_->CreateBr(inlining_exit_bb_);
-                // Continue in unreachable block (statements after this return won't be reached)
-                llvm::BasicBlock* unreachable = llvm::BasicBlock::Create(*context_, "inline.unreachable", builder_->GetInsertBlock()->getParent());
-                builder_->SetInsertPoint(unreachable);
-                break;
-            }
-            if (inlining_ && inlining_raise_) {
-                // Raise inlining: RETURN → store value and branch to exit block
-                // (nil check happens after the inlined body in gen_inline_call)
-                if (!stmt.return_values.empty()) {
-                    llvm::Value* val = gen_expr(*stmt.return_values[0]);
-                    // Capture concrete type from AST before bitcast to opaque pointer
-                    last_inlined_concrete_type_.clear();
-                    Expr* ret_expr = stmt.return_values[0].get();
-                    if (ret_expr->kind == ExprKind::STRUCT_LITERAL) {
-                        last_inlined_concrete_type_ = ret_expr->struct_literal.type_name;
-                    } else if (ret_expr->kind == ExprKind::IDENT) {
-                        auto sit = named_struct_types_.find(ret_expr->ident);
-                        if (sit != named_struct_types_.end()) {
-                            std::string sname = strip_struct_prefix(sit->second->getStructName().str());
-                            last_inlined_concrete_type_ = sname;
-                        }
-                    }
-                    val = builder_->CreateBitCast(val, llvm::PointerType::get(*context_, 0));
-                    builder_->CreateStore(val, inlining_ret_alloca_);
-                } else if (stmt.expr) {
-                    llvm::Value* val = gen_expr(*stmt.expr);
-                    last_inlined_concrete_type_.clear();
-                    Expr* ret_expr = stmt.expr.get();
-                    if (ret_expr->kind == ExprKind::STRUCT_LITERAL) {
-                        last_inlined_concrete_type_ = ret_expr->struct_literal.type_name;
-                    } else if (ret_expr->kind == ExprKind::IDENT) {
-                        auto sit = named_struct_types_.find(ret_expr->ident);
-                        if (sit != named_struct_types_.end()) {
-                            std::string sname = strip_struct_prefix(sit->second->getStructName().str());
-                            last_inlined_concrete_type_ = sname;
-                        }
-                    }
-                    val = builder_->CreateBitCast(val, llvm::PointerType::get(*context_, 0));
-                    builder_->CreateStore(val, inlining_ret_alloca_);
-                } else {
-                    last_inlined_concrete_type_.clear();
-                    builder_->CreateStore(llvm::ConstantPointerNull::get(llvm::PointerType::get(*context_, 0)),
-                                          inlining_ret_alloca_);
-                }
-                // Emit deferred calls before branching
-                emit_deferred();
-                builder_->CreateBr(inlining_exit_bb_);
-                // Continue in unreachable block (statements after this return won't be reached)
-                llvm::BasicBlock* unreachable2 = llvm::BasicBlock::Create(*context_, "inline.unreachable", builder_->GetInsertBlock()->getParent());
-                builder_->SetInsertPoint(unreachable2);
-                break;
-            }
             if (!stmt.return_values.empty()) {
-                // Multi-return: build packed struct with insertvalue
                 llvm::Type* ret_type = current_fn_->getReturnType();
                 llvm::Value* result = llvm::UndefValue::get(ret_type);
                 for (size_t i = 0; i < stmt.return_values.size(); i++) {
                     llvm::Value* val = gen_expr(*stmt.return_values[i]);
-                    // If we have a pointer but the element type is a struct value, load it
-                    if (val->getType()->isPointerTy() && ret_type->isStructTy()) {
-                        llvm::StructType* sty = llvm::cast<llvm::StructType>(ret_type);
-                        llvm::Type* elem_type = sty->getElementType((unsigned)i);
-                        if (elem_type->isStructTy() && !llvm::isa<llvm::ConstantPointerNull>(val)) {
+                    llvm::StructType* sty = llvm::cast<llvm::StructType>(ret_type);
+                    llvm::Type* elem_type = sty->getElementType((unsigned)i);
+
+                    if (is_tu_type(elem_type)) {
+                        val = ensure_in_tu(val, elem_type);
+                    } else if (val->getType()->isPointerTy() && elem_type->isStructTy()) {
+                        if (!llvm::isa<llvm::ConstantPointerNull>(val)) {
                             val = builder_->CreateLoad(elem_type, val, "retload");
                         }
+                    } else if (val->getType()->isPointerTy() && elem_type->isIntegerTy()) {
+                        val = builder_->CreatePtrToInt(val, elem_type);
                     }
                     result = builder_->CreateInsertValue(result, val, (unsigned)i);
                 }
@@ -1146,9 +1553,10 @@ void CodegenImpl::gen_stmt(Stmt& stmt) {
             } else if (stmt.expr) {
                 llvm::Value* val = gen_expr(*stmt.expr);
                 llvm::Type* ret_type = current_fn_->getReturnType();
-                // If return type is a struct value but we have a pointer, load it
-                // (but not for null pointers or pointer-typed returns)
-                if (val->getType()->isPointerTy() && ret_type->isStructTy() &&
+
+                if (is_tu_type(ret_type) && val) {
+                    val = ensure_in_tu(val, ret_type);
+                } else if (val && val->getType()->isPointerTy() && ret_type->isStructTy() &&
                     !llvm::isa<llvm::ConstantPointerNull>(val) &&
                     !ret_type->isPointerTy()) {
                     val = builder_->CreateLoad(ret_type, val, "retload");
@@ -1157,7 +1565,14 @@ void CodegenImpl::gen_stmt(Stmt& stmt) {
                 builder_->CreateRet(val);
             } else {
                 emit_deferred();
-                builder_->CreateRetVoid();
+                llvm::Type* ret_type = current_fn_->getReturnType();
+                if (ret_type->isVoidTy()) {
+                    builder_->CreateRetVoid();
+                } else if (is_tu_type(ret_type)) {
+                    builder_->CreateRet(llvm::Constant::getNullValue(ret_type));
+                } else {
+                    builder_->CreateRet(llvm::ConstantInt::get(*context_, llvm::APInt(64, 0)));
+                }
             }
             break;
 
@@ -1270,7 +1685,7 @@ void CodegenImpl::gen_stmt(Stmt& stmt) {
                 builder_->SetInsertPoint(unreachable);
             }
             break;
-        case StmtKind::CONTINUE:
+        case StmtKind::PASS:
             if (!loop_stack_.empty()) {
                 builder_->CreateBr(loop_stack_.back().continue_target);
                 llvm::BasicBlock* unreachable = llvm::BasicBlock::Create(*context_, "after.continue", current_fn_);
@@ -1294,7 +1709,7 @@ void CodegenImpl::gen_stmt(Stmt& stmt) {
                 llvm::FunctionType* asm_type = llvm::FunctionType::get(
                     llvm::Type::getVoidTy(*context_), false);
                 llvm::InlineAsm* inline_asm = llvm::InlineAsm::get(
-                    asm_type, stmt.asm_stmt.code, "", stmt.asm_stmt.is_volatile);
+                    asm_type, stmt.asm_stmt.code, "", true);
                 builder_->CreateCall(inline_asm);
             } else {
                 std::vector<llvm::Type*> arg_types;
@@ -1331,7 +1746,7 @@ void CodegenImpl::gen_stmt(Stmt& stmt) {
                 llvm::FunctionType* asm_type = llvm::FunctionType::get(
                     llvm::Type::getVoidTy(*context_), arg_types, false);
                 llvm::InlineAsm* inline_asm = llvm::InlineAsm::get(
-                    asm_type, stmt.asm_stmt.code, constraint_str, stmt.asm_stmt.is_volatile);
+                    asm_type, stmt.asm_stmt.code, constraint_str, true);
                 builder_->CreateCall(inline_asm, arg_vals);
             }
             break;
@@ -1340,7 +1755,6 @@ void CodegenImpl::gen_stmt(Stmt& stmt) {
         case StmtKind::MULTI_ASSIGN: {
             llvm::Value* val = gen_expr(*stmt.multi_assign.value);
 
-            // val should be a packed struct from multi-return function
             if (val->getType()->isStructTy()) {
                 llvm::StructType* sty = llvm::cast<llvm::StructType>(val->getType());
                 for (size_t i = 0; i < stmt.multi_assign.targets.size() && i < sty->getNumElements(); i++) {
@@ -1383,7 +1797,14 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
         case ExprKind::IDENT: {
             auto it = named_values_.find(expr.ident);
             if (it != named_values_.end()) {
-                return builder_->CreateLoad(it->second->getAllocatedType(), it->second, expr.ident);
+                llvm::Value* loaded = builder_->CreateLoad(it->second->getAllocatedType(), it->second, expr.ident);
+                if (it->second->getAllocatedType()->isPointerTy()) {
+                    auto sit = named_struct_types_.find(expr.ident);
+                    if (sit != named_struct_types_.end()) {
+                        value_struct_type_[loaded] = sit->second;
+                    }
+                }
+                return loaded;
             }
             auto cit = const_values_.find(expr.ident);
             if (cit != const_values_.end()) {
@@ -1422,14 +1843,34 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
                 case BinOp::DIV: return builder_->CreateSDiv(left, right, "divtmp");
                 case BinOp::MOD: return builder_->CreateSRem(left, right, "modtmp");
                 case BinOp::EQ: {
-                    if (left->getType()->isStructTy()) {
+                    if (is_tu_type(left->getType()) && right->getType()->isPointerTy()) {
+                        llvm::Value* tag = builder_->CreateExtractValue(left, {0}, "tu.tag");
+                        return builder_->CreateICmpEQ(tag,
+                            llvm::ConstantInt::get(*context_, llvm::APInt(32, 0)), "tu.is_nil");
+                    }
+                    if (left->getType()->isPointerTy() && is_tu_type(right->getType())) {
+                        llvm::Value* tag = builder_->CreateExtractValue(right, {0}, "tu.tag");
+                        return builder_->CreateICmpEQ(tag,
+                            llvm::ConstantInt::get(*context_, llvm::APInt(32, 0)), "tu.is_nil");
+                    }
+                    if (left->getType()->isStructTy() && !is_tu_type(left->getType())) {
                         left = builder_->CreateExtractValue(left, 0, "ptr");
                         right = builder_->CreateExtractValue(right, 0, "ptr");
                     }
                     return builder_->CreateICmpEQ(left, right, "eqtmp");
                 }
                 case BinOp::NEQ: {
-                    if (left->getType()->isStructTy()) {
+                    if (is_tu_type(left->getType()) && right->getType()->isPointerTy()) {
+                        llvm::Value* tag = builder_->CreateExtractValue(left, {0}, "tu.tag");
+                        return builder_->CreateICmpNE(tag,
+                            llvm::ConstantInt::get(*context_, llvm::APInt(32, 0)), "tu.is_nonnil");
+                    }
+                    if (left->getType()->isPointerTy() && is_tu_type(right->getType())) {
+                        llvm::Value* tag = builder_->CreateExtractValue(right, {0}, "tu.tag");
+                        return builder_->CreateICmpNE(tag,
+                            llvm::ConstantInt::get(*context_, llvm::APInt(32, 0)), "tu.is_nonnil");
+                    }
+                    if (left->getType()->isStructTy() && !is_tu_type(left->getType())) {
                         left = builder_->CreateExtractValue(left, 0, "ptr");
                         right = builder_->CreateExtractValue(right, 0, "ptr");
                     }
@@ -1493,12 +1934,10 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
             llvm::Value* receiver = nullptr;
             bool is_cross_package = false;
 
-            // Helper: check if a name is exported (starts with uppercase)
             auto is_exported = [](const std::string& s) -> bool {
                 return !s.empty() && s[0] >= 'A' && s[0] <= 'Z';
             };
 
-            // Helper: save/restore builder state for lazy compilation
             auto lazy_with_state = [&](const std::string& pkg, const std::string& file) {
                 llvm::BasicBlock* prev_block = builder_->GetInsertBlock();
                 auto prev_values = named_values_;
@@ -1525,7 +1964,6 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
 
                     auto it = import_names_.find(first);
                     if (it != import_names_.end()) {
-                        // Import binding found: file.fn pattern
                         auto& entry = it->second;
                         std::string pkg = entry.package_path;
                         if (pkg.empty()) pkg = current_package_;
@@ -1535,7 +1973,6 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
                             is_cross_package = true;
                         }
                     } else {
-                        // Not an import — treat as method call or receiver expression
                         receiver = gen_expr(*expr.call.callee->dot.object);
                     }
                 } else {
@@ -1548,42 +1985,113 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
                 args.push_back(gen_expr(*arg));
             }
 
-            // Visibility check: exported functions only for cross-package calls
+            // Generic function call detection
+            if (expr.call.callee->kind == ExprKind::GENERIC_REF) {
+                fn_name_bare = expr.call.callee->generic_ref.name;
+                // Resolve explicit type args
+                std::vector<llvm::Type*> type_args;
+                for (auto& ta : expr.call.callee->generic_ref.type_args) {
+                    type_args.push_back(resolve_type(*ta));
+                }
+                // Build arg types for inference, resolving struct types from named_struct_types_
+                std::vector<llvm::Type*> arg_types;
+                for (size_t ai = 0; ai < args.size(); ai++) {
+                    llvm::Type* ty = args[ai]->getType();
+                    if (ai < expr.call.args.size() && expr.call.args[ai]->kind == ExprKind::IDENT) {
+                        auto nsit = named_struct_types_.find(expr.call.args[ai]->ident);
+                        if (nsit != named_struct_types_.end()) {
+                            ty = nsit->second;
+                        }
+                    }
+                    arg_types.push_back(ty);
+                }
+
+                // If no explicit type args, try to infer
+                if (type_args.empty()) {
+                    auto decl_it = generic_fn_decls_.find(fn_name_bare);
+                    if (decl_it != generic_fn_decls_.end()) {
+                        if (!infer_type_args(decl_it->second, arg_types, type_args)) {
+                            error("cannot infer type arguments for '" + fn_name_bare + "'");
+                            return llvm::ConstantInt::get(*context_, llvm::APInt(64, 0));
+                        }
+                    }
+                }
+
+                llvm::Function* gen_func = monomorphize_fn(fn_name_bare, type_args);
+                if (!gen_func) return llvm::ConstantInt::get(*context_, llvm::APInt(64, 0));
+
+                // Convert args to match function signature
+                for (size_t i = 0; i < args.size() && i < gen_func->arg_size(); i++) {
+                    llvm::Type* param_type = gen_func->getArg(i)->getType();
+                    llvm::Type* arg_type = args[i]->getType();
+                    if (param_type != arg_type) {
+                        if (param_type->isStructTy() && arg_type->isPointerTy()) {
+                            args[i] = builder_->CreateLoad(param_type, args[i], "generic.arg");
+                        } else if (is_tu_type(param_type) && arg_type->isStructTy() && arg_type != param_type) {
+                            args[i] = ensure_in_tu(args[i], param_type);
+                        }
+                    }
+                }
+
+                if (gen_func->getReturnType()->isVoidTy()) {
+                    builder_->CreateCall(gen_func, args);
+                    return nullptr;
+                }
+                return builder_->CreateCall(gen_func, args, "calltmp");
+            }
+
+            // Check if callee is IDENT pointing to a generic function (inferred call)
+            if (expr.call.callee->kind == ExprKind::IDENT) {
+                auto gen_it = generic_fn_decls_.find(fn_name_bare);
+                if (gen_it != generic_fn_decls_.end()) {
+                    std::vector<llvm::Type*> arg_types;
+                    for (size_t ai = 0; ai < args.size(); ai++) {
+                        llvm::Type* ty = args[ai]->getType();
+                        if (ai < expr.call.args.size() && expr.call.args[ai]->kind == ExprKind::IDENT) {
+                            auto nsit = named_struct_types_.find(expr.call.args[ai]->ident);
+                            if (nsit != named_struct_types_.end()) {
+                                ty = nsit->second;
+                            }
+                        }
+                        arg_types.push_back(ty);
+                    }
+                    std::vector<llvm::Type*> type_args;
+                    if (!infer_type_args(gen_it->second, arg_types, type_args)) {
+                        error("cannot infer type arguments for '" + fn_name_bare + "'");
+                        return llvm::ConstantInt::get(*context_, llvm::APInt(64, 0));
+                    }
+                    llvm::Function* gen_func = monomorphize_fn(fn_name_bare, type_args);
+                    if (!gen_func) return llvm::ConstantInt::get(*context_, llvm::APInt(64, 0));
+
+                    for (size_t i = 0; i < args.size() && i < gen_func->arg_size(); i++) {
+                        llvm::Type* param_type = gen_func->getArg(i)->getType();
+                        llvm::Type* arg_type = args[i]->getType();
+                        if (param_type != arg_type) {
+                            if (param_type->isStructTy() && arg_type->isPointerTy()) {
+                                args[i] = builder_->CreateLoad(param_type, args[i], "generic.arg");
+                            } else if (is_tu_type(param_type) && arg_type->isStructTy() && arg_type != param_type) {
+                                args[i] = ensure_in_tu(args[i], param_type);
+                            }
+                        }
+                    }
+
+                    if (gen_func->getReturnType()->isVoidTy()) {
+                        builder_->CreateCall(gen_func, args);
+                        return nullptr;
+                    }
+                    return builder_->CreateCall(gen_func, args, "calltmp");
+                }
+            }
+
             if (is_cross_package && !is_exported(fn_name_bare)) {
                 error("cannot access unexported function '" + fn_name_bare + "'");
                 return llvm::ConstantInt::get(*context_, llvm::APInt(64, 0));
             }
 
-            // Interface-returning function: inline at call site (single-return only)
-            if (!fn_name_bare.empty()) {
-                auto iface_ret_it = iface_returning_decls_.find(fn_name_bare);
-                if (iface_ret_it != iface_returning_decls_.end()) {
-                    // Only inline single-return error functions; multi-return uses normal call path
-                    if (iface_ret_it->second->return_types.size() == 1) {
-                        bool call_is_raise = current_stmt_raise_;
-                        return gen_inline_call(*iface_ret_it->second, args, call_is_raise);
-                    }
-                }
-            }
-
             llvm::Function* func = nullptr;
 
-            // Monomorphization dispatch: check if function has interface params
             if (!fn_name_bare.empty()) {
-                auto iface_it = iface_fn_decls_.find(fn_name_bare);
-                if (iface_it != iface_fn_decls_.end()) {
-                    Expr* first_arg = expr.call.args.empty() ? nullptr : expr.call.args[0].get();
-                    std::string concrete = infer_concrete_type(first_arg);
-                    if (!concrete.empty() && !concrete.starts_with("*")) {
-                        func = gen_monomorphized_fn(fn_name_bare, concrete, iface_it->second);
-                    } else if (!concrete.empty() && concrete.starts_with("*")) {
-                        func = gen_monomorphized_fn(fn_name_bare, concrete.substr(1), iface_it->second);
-                    }
-                }
-                if (!func) {
-                    func = module_->getFunction(fn_name_mangled);
-                }
-                // Fallback: same-package call (bare name without file prefix)
+                func = module_->getFunction(fn_name_mangled);
                 if (!func && !fn_name_mangled.empty() && fn_name_mangled == fn_name_bare &&
                     !current_file_.empty()) {
                     func = module_->getFunction(current_file_ + "." + fn_name_mangled);
@@ -1602,20 +2110,17 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
                 llvm::Type* param_type = func->getArg(0)->getType();
                 llvm::Type* receiver_type = receiver->getType();
 
-                // If receiver is i8* (error type) and param expects a concrete struct type,
-                // bitcast i8* to the concrete struct pointer type first
-                if (receiver_type->isPointerTy() && param_type->isStructTy()) {
-                    std::string receiver_name;
-                    if (expr.call.callee->kind == ExprKind::DOT_ACCESS &&
-                        expr.call.callee->dot.object->kind == ExprKind::IDENT) {
-                        receiver_name = expr.call.callee->dot.object->ident;
-                    }
-                    if (!receiver_name.empty()) {
-                        llvm::StructType* stype = find_struct_type(receiver_name);
-                        if (stype) {
-                            receiver = builder_->CreateBitCast(receiver, llvm::PointerType::get(*context_, 0));
-                            receiver_type = receiver->getType();
+                if (is_tu_type(receiver_type) && receiver_type != param_type) {
+                    std::string structural_name;
+                    for (auto& [sname, stt] : structural_tu_types_) {
+                        if (receiver_type == stt) {
+                            structural_name = sname;
+                            break;
                         }
+                    }
+                    if (!structural_name.empty()) {
+                        llvm::Type* ret_type = func->getReturnType();
+                        return gen_structural_dispatch(structural_name, fn_name_bare, receiver, args, ret_type);
                     }
                 }
 
@@ -1625,6 +2130,11 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
                     receiver = alloca;
                 } else if (receiver_type->isPointerTy() && !param_type->isPointerTy()) {
                     receiver = builder_->CreateLoad(param_type, receiver, "deref");
+                } else if (receiver_type->isStructTy() && param_type->isStructTy() &&
+                           receiver_type != param_type) {
+                    if (is_tu_type(param_type)) {
+                        receiver = ensure_in_tu(receiver, param_type);
+                    }
                 }
                 args.insert(args.begin(), receiver);
             }
@@ -1633,7 +2143,13 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
                 llvm::Type* param_type = func->getArg(i)->getType();
                 llvm::Type* arg_type = args[i]->getType();
                 if (param_type->isStructTy() && arg_type->isPointerTy()) {
-                    args[i] = builder_->CreateLoad(param_type, args[i], "structarg");
+                    if (is_tu_type(param_type)) {
+                        args[i] = ensure_in_tu(args[i], param_type);
+                    } else {
+                        args[i] = builder_->CreateLoad(param_type, args[i], "structarg");
+                    }
+                } else if (is_tu_type(param_type) && arg_type->isStructTy() && arg_type != param_type) {
+                    args[i] = ensure_in_tu(args[i], param_type);
                 }
             }
 
@@ -1789,7 +2305,53 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
         }
 
         case ExprKind::STRUCT_LITERAL: {
-            auto it = struct_types_.find(expr.struct_literal.type_name);
+            std::string lookup_name = expr.struct_literal.type_name;
+
+            // Generic struct literal: monomorphize
+            if (!expr.struct_literal.type_args.empty()) {
+                auto gen_it = generic_type_decls_.find(lookup_name);
+                if (gen_it != generic_type_decls_.end()) {
+                    std::vector<llvm::Type*> type_args;
+                    for (auto& ta : expr.struct_literal.type_args) {
+                        type_args.push_back(resolve_type(*ta));
+                    }
+                    llvm::StructType* specialized = monomorphize_type(lookup_name, type_args);
+                    if (!specialized) {
+                        return llvm::ConstantInt::get(*context_, llvm::APInt(64, 0));
+                    }
+
+                    llvm::AllocaInst* alloca = builder_->CreateAlloca(specialized, nullptr, lookup_name + ".tmp");
+                    auto fit = struct_fields_.find(
+                        mangle_generic(lookup_name, type_args));
+                    if (fit == struct_fields_.end()) {
+                        return alloca;
+                    }
+                    auto& field_names = fit->second;
+
+                    for (auto& field_init : expr.struct_literal.fields) {
+                        int field_idx = -1;
+                        for (size_t i = 0; i < field_names.size(); i++) {
+                            if (field_names[i] == field_init.name) {
+                                field_idx = i;
+                                break;
+                            }
+                        }
+                        if (field_idx == -1) continue;
+                        llvm::Value* val = gen_expr(*field_init.value);
+                        llvm::Value* field_ptr = builder_->CreateGEP(specialized, alloca,
+                            {llvm::ConstantInt::get(*context_, llvm::APInt(32, 0)),
+                             llvm::ConstantInt::get(*context_, llvm::APInt(32, field_idx))},
+                            field_init.name);
+                        builder_->CreateStore(val, field_ptr);
+                    }
+
+                    alloca->setName(lookup_name + ".val");
+                    value_struct_type_[alloca] = specialized;
+                    return alloca;
+                }
+            }
+
+            auto it = struct_types_.find(lookup_name);
             if (it == struct_types_.end()) {
                 std::cerr << "error: unknown type '" << expr.struct_literal.type_name << "'" << std::endl;
                 return llvm::ConstantInt::get(*context_, llvm::APInt(64, 0));
@@ -1821,6 +2383,7 @@ llvm::Value* CodegenImpl::gen_expr(Expr& expr) {
             }
 
             alloca->setName(expr.struct_literal.type_name + ".val");
+            value_struct_type_[alloca] = stype;
             return alloca;
         }
     }
@@ -1834,6 +2397,15 @@ llvm::Type* CodegenImpl::resolve_type(TypeAnnotation& type) {
             if (it != struct_types_.end()) {
                 return it->second;
             }
+            // Generic type with type args: Pair[int] → monomorphize
+            if (!type.type_args.empty()) {
+                std::vector<llvm::Type*> resolved_args;
+                for (auto& ta : type.type_args) {
+                    resolved_args.push_back(resolve_type(*ta));
+                }
+                llvm::StructType* specialized = monomorphize_type(type.name, resolved_args);
+                if (specialized) return specialized;
+            }
             if (type.name == "int" || type.name == "i32" || type.name == "i64" ||
                 type.name == "u8" || type.name == "u16" || type.name == "u32" || type.name == "u64")
                 return llvm::Type::getIntNTy(*context_, config_.types.int_width);
@@ -1845,14 +2417,31 @@ llvm::Type* CodegenImpl::resolve_type(TypeAnnotation& type) {
                 return string_type_;
             if (type.name == "char")
                 return llvm::Type::getIntNTy(*context_, config_.types.char_width);
-            if (type.name == "error")
+            if (type.name == "error") {
+                if (error_tu_type_) return error_tu_type_;
                 return llvm::PointerType::get(*context_, 0);
+            }
+            auto structural_it = structural_tu_types_.find(type.name);
+            if (structural_it != structural_tu_types_.end()) {
+                return structural_it->second;
+            }
             return llvm::Type::getIntNTy(*context_, config_.types.int_width);
         }
         case TypeKind::POINTER:
         case TypeKind::SLICE:
         case TypeKind::ARRAY:
             return llvm::PointerType::get(*context_, 0);
+        case TypeKind::TYPE_PARAM: {
+            auto it = current_type_subst_.find(type.name);
+            if (it != current_type_subst_.end()) return it->second;
+            error("unresolved type parameter '" + type.name + "'");
+            return llvm::Type::getInt64Ty(*context_);
+        }
+        case TypeKind::STRUCTURAL: {
+            auto it = structural_tu_types_.find(type.name);
+            if (it != structural_tu_types_.end()) return it->second;
+            return llvm::PointerType::get(*context_, 0);
+        }
         default:
             return llvm::Type::getInt64Ty(*context_);
     }

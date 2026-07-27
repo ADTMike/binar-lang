@@ -1,9 +1,0 @@
-// exit: 0
-import { os } from "os"
-fn main() {
-    x := 10
-    if x > 20 {
-        os.Exit(1)
-    }
-    os.Exit(0)
-}

@@ -1,0 +1,42 @@
+// exit: 0
+// Tests: structural typing with ~TypeName
+import { os } from "os"
+
+fn check(expected int, actual int) {
+    if expected != actual {
+        os.Exit(1)
+    }
+}
+
+type ZapLogger {
+    X int
+}
+
+type ConsoleLogger {
+    X int
+}
+
+fn GetVal(l ZapLogger) int {
+    return l.X
+}
+
+fn GetVal(l ConsoleLogger) int {
+    return l.X
+}
+
+fn Process(l ~ZapLogger) int {
+    return l.GetVal()
+}
+
+fn main() {
+    // basic structural type: Process accepts ZapLogger
+    z := ZapLogger{X: 42}
+    check(42, Process(z))
+
+    // multi impl: both types accepted
+    z2 := ZapLogger{X: 10}
+    c := ConsoleLogger{X: 20}
+    v1 := Process(z2)
+    v2 := Process(c)
+    check(30, v1 + v2)
+}

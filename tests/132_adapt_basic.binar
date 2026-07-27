@@ -1,5 +1,5 @@
 // exit: 42
-// Tests: basic structural type acceptance
+// Tests: basic structural dispatch with method call
 import { os } from "os"
 
 type ZapLogger {

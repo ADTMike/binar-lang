@@ -1,15 +1,15 @@
-// error: interface-returning function 'f' has non-tail recursive calls which would cause infinite inlining
-// Test: non-tail recursion should produce compile error
-// This should fail to compile because f(n-1) + 1 is not a tail call
+// exit: 0
+// Test: tail recursive error-returning function (no longer blocked by sema)
 import { os } from "os"
 
 fn f(n int) error {
     if n <= 0 {
         return nil
     }
-    return f(n - 1) + 1
+    return f(n - 1)
 }
 
 fn main() {
-    os.Exit(1)
+    f(10) raise
+    os.Exit(0)
 }

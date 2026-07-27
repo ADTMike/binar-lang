@@ -1,9 +1,0 @@
-// exit: 15
-import { os } from "os"
-fn Sum(a int, b int, c int) int {
-    return a + b + c
-}
-
-fn main() {
-    os.Exit(Sum(3, 5, 7))
-}

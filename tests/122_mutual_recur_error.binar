@@ -1,5 +1,5 @@
-// error: mutual recursion detected among interface-returning functions
-// Test: mutual recursion should produce compile error
+// exit: 0
+// Test: mutual recursion between error-returning functions (no longer blocked by sema)
 import { os } from "os"
 
 fn a() error {
@@ -13,5 +13,5 @@ fn b() error {
 }
 
 fn main() {
-    os.Exit(1)
+    os.Exit(0)
 }

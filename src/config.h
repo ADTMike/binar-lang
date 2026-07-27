@@ -68,28 +68,15 @@ struct TypeWidths {
     uint32_t pointer_width = 64;
 };
 
-// ==================== Built-in Registry ====================
-
-enum class BuiltinKind {
-    INLINE_ASM,
-    WRITE_SYSCALL,
-};
-
-struct BuiltinEntry {
-    std::string module_name;
-    std::string name;
-    BuiltinKind kind;
-};
-
-struct BuiltinInterfaceMethod {
+struct BuiltinPortMethod {
     std::string name;
     std::string param_type;
     bool is_pointer;
 };
 
-struct BuiltinInterface {
+struct BuiltinPort {
     std::string name;
-    std::vector<BuiltinInterfaceMethod> methods;
+    std::vector<BuiltinPortMethod> methods;
 };
 
 // ==================== Entry Point Configuration ====================
@@ -136,8 +123,7 @@ struct CompilerConfig {
     TargetInit target_init;
     SyscallABI syscall;
     TypeWidths types;
-    std::vector<BuiltinEntry> builtins;
-    std::vector<BuiltinInterface> builtin_interfaces;
+    std::vector<BuiltinPort> builtin_ports;
     EntryPointConfig entry_point;
     ModuleConfig module;
     CompilerConstants constants;

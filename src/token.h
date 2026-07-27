@@ -17,7 +17,7 @@ enum class TokenType {
     // Keywords
     KW_FN,
     KW_TYPE,
-    KW_CONST,
+    // KW_CONST removed — ALL_CAPS convention for constants
     KW_IMPORT,
     KW_IF,
     KW_ELSE,
@@ -25,7 +25,7 @@ enum class TokenType {
     KW_WHILE,
     KW_RETURN,
     KW_BREAK,
-    KW_CONTINUE,
+    KW_PASS,
     KW_RANGE,
     KW_DEFER,
     KW_NIL,
@@ -35,10 +35,9 @@ enum class TokenType {
     KW_CASE,
     KW_DEFAULT,
     KW_ASM,
-    KW_VOLATILE,
-    KW_IFACE,
     KW_FROM,
     KW_RAISE,
+    KW_IOTA,
 
     // Types
     TYPE_INT,

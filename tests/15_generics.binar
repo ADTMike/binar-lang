@@ -1,0 +1,65 @@
+// exit: 0
+// Tests: generic functions, type inference, explicit type args, generic structs
+import { os } from "os"
+
+fn check(expected int, actual int) {
+    if expected != actual {
+        os.Exit(1)
+    }
+}
+
+fn identity[T](x T) T {
+    return x
+}
+
+fn max[T](a T, b T) T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+fn add[T](a T, b T) T {
+    return a + b
+}
+
+fn deref_val[T](x *T) T {
+    return *x
+}
+
+type Pair[T] {
+    first T
+    second T
+}
+
+fn get_first[T](p Pair[T]) T {
+    return p.first
+}
+
+fn main() {
+    // identity with inference
+    result int = identity(42)
+    check(42, result)
+
+    // max with inference
+    check(20, max(10, 20))
+
+    // explicit type args
+    check(99, identity[int](99))
+
+    // generic struct
+    p := Pair[int]{ first: 2, second: 3 }
+    check(5, p.first + p.second)
+
+    // generic function on generic struct
+    p2 := Pair[int]{ first: 10, second: 20 }
+    check(10, get_first(p2))
+
+    // multi instantiate
+    a int = add(3, 4)
+    check(7, a)
+
+    // pointer param with explicit type
+    v := 42
+    check(42, deref_val[int](&v))
+}

@@ -1,18 +1,15 @@
 // exit: 10
+// Tests: method call through structural type
 import { os } from "os"
 
 type Counter {
     Val int
 }
 
-iface Logger {
-    fn Increment(Logger)
-}
-
 fn Increment(l Counter) {
 }
 
-fn Process(l Logger) int {
+fn Process(l ~Counter) int {
     l.Increment()
     l.Increment()
     l.Increment()

@@ -29,14 +29,8 @@ CompilerConfig CompilerConfig::default_config() {
         .pointer_width = 64,
     };
 
-    cfg.builtins = {
-        BuiltinEntry{"os", "Exit", BuiltinKind::INLINE_ASM},
-        BuiltinEntry{"fmt", "Print", BuiltinKind::WRITE_SYSCALL},
-        BuiltinEntry{"fmt", "Println", BuiltinKind::WRITE_SYSCALL},
-    };
-
-    cfg.builtin_interfaces = {
-        BuiltinInterface{
+    cfg.builtin_ports = {
+        BuiltinPort{
             "error",
             {{"Error", "error", false}},
         },

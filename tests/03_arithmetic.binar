@@ -1,0 +1,49 @@
+// exit: 0
+// Tests: +, -, *, /, %, chaining, multi-op, compound
+import { os } from "os"
+
+fn check(expected int, actual int) {
+    if expected != actual {
+        os.Exit(1)
+    }
+}
+
+fn main() {
+    check(42, 10 + 32)
+    check(6, 1 + 2 + 3)
+    check(9, 3 * 3)
+    check(3, 10 / 3)
+    check(1, 10 % 3)
+    check(10, 5 + 5)
+    check(6, 2 * 3)
+    check(5, 10 / 2)
+    check(10, 100 / 10)
+    x := 10
+    y := 20
+    z := x + y
+    w := z * 2
+    check(0, w - 60)
+    a := 10
+    b := 20
+    c := 12
+    check(42, a + b + c)
+    x2 := 10
+    x2 += 5
+    x2 *= 2
+    check(30, x2)
+    x3 := 10
+    x3 += 5
+    x3 *= 2
+    x3 -= 5
+    check(25, x3)
+    x4 := 1
+    x4 = x4 + 1
+    x4 = x4 + 1
+    x4 = x4 + 1
+    x4 = x4 + 1
+    x4 = x4 + 1
+    x4 = x4 + 1
+    x4 = x4 + 1
+    x4 = x4 + 1
+    check(9, x4)
+}

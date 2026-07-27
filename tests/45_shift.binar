@@ -1,7 +1,0 @@
-// exit: 6
-import { os } from "os"
-fn main() {
-    x := 3
-    y := x << 1
-    os.Exit(y)
-}

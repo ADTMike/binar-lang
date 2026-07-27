@@ -40,8 +40,8 @@ private:
     Decl parse_decl();
     Decl parse_fn_decl();
     Decl parse_type_decl();
-    Decl parse_iface_decl();
-    Decl parse_const_decl();
+    Decl parse_constant_decl();
+    Decl parse_global_var_decl();
     Decl parse_import();
     Decl parse_alias_decl();
 
@@ -85,10 +85,16 @@ private:
 
     ExprPtr parse_call_args(ExprPtr callee);
 
+    // Iota helpers
+    ExprPtr make_iota_literal(int value);
+    static bool is_all_caps(const std::string& name);
+    static bool is_exported_name(const std::string& name);
+
     std::vector<Token> tokens_;
     std::string filename_;
     size_t pos_;
     std::set<std::string> current_fn_type_params_;
+    int current_iota_index_ = 0;
 };
 
 } // namespace binar

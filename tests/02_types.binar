@@ -1,0 +1,21 @@
+// exit: 0
+// Tests: explicit type, zero init, hex, binary, underscore literals
+import { os } from "os"
+
+fn check(expected int, actual int) {
+    if expected != actual {
+        os.Exit(1)
+    }
+}
+
+fn main() {
+    x int = 42
+    check(42, x)
+    y int
+    check(0, y)
+    check(255, 0xFF)
+    check(255, 0b11111111)
+    a := 1_000_000
+    b := 999_990
+    check(10, a - b)
+}

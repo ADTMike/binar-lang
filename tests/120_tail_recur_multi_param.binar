@@ -1,6 +1,6 @@
 // exit: 15
 // Test tail recursion with accumulator: sum(5, 0) = 1+2+3+4+5 = 15
-// Uses pointer param to store result since error is now an interface type
+// Uses pointer param to store result since error is now a port type
 import { os } from "os"
 
 type SumErr {

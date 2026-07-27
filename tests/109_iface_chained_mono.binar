@@ -1,23 +1,20 @@
-// exit: 50
+// exit: 60
+// Tests: chained structural dispatch
 import { os } from "os"
 
 type ZapLogger {
     X int
 }
 
-iface Logger {
-    fn GetVal(Logger)
+fn GetVal(l ZapLogger) int {
+    return l.X
 }
 
-fn GetVal(l ZapLogger) {
+fn Process(l ~ZapLogger) int {
+    return l.GetVal()
 }
 
-fn Process(l Logger) int {
-    return 0
-}
-
-fn Compute(l Logger) int {
-    l.GetVal()
+fn Compute(l ~ZapLogger) int {
     v := Process(l)
     return v + 50
 }

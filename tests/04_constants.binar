@@ -1,7 +1,0 @@
-// exit: 100
-import { os } from "os"
-const N = 100
-
-fn main() {
-    os.Exit(N)
-}

@@ -1,0 +1,38 @@
+// exit: 0
+// Tests: method call syntax, method struct param with pointer receiver
+import { os } from "os"
+
+fn check(expected int, actual int) {
+    if expected != actual {
+        os.Exit(1)
+    }
+}
+
+type Vec2 {
+    x int
+    y int
+}
+
+fn double(x int) int {
+    return x * 2
+}
+
+fn add_to(x int, y int) int {
+    return x + y
+}
+
+fn Distance(self *Vec2) int {
+    return self.x + self.y
+}
+
+fn main() {
+    // method call on int
+    x := 7
+    a := x.double()
+    b := x.add_to(3)
+    check(24, a + b)
+
+    // method struct param with pointer receiver
+    v := Vec2{ x: 7, y: 8 }
+    check(15, v.Distance())
+}

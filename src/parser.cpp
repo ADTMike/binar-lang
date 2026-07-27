@@ -1,5 +1,6 @@
 #include "parser.h"
 #include <sstream>
+#include <cctype>
 
 namespace binar {
 
@@ -86,9 +87,10 @@ Program Parser::parse() {
 Decl Parser::parse_decl() {
     if (check(TokenType::KW_FN)) return parse_fn_decl();
     if (check(TokenType::KW_TYPE)) return parse_type_decl();
-    if (check(TokenType::KW_IFACE)) return parse_iface_decl();
-    if (check(TokenType::KW_CONST)) return parse_const_decl();
     if (check(TokenType::KW_IMPORT)) return parse_import();
+    if (check(TokenType::IDENT) && is_all_caps(peek().value)) return parse_constant_decl();
+    if (check(TokenType::IDENT) && check_next(TokenType::COLON_ASSIGN)) return parse_global_var_decl();
+    if (check(TokenType::IDENT)) return parse_global_var_decl();
     error("unexpected token at top level");
 }
 
@@ -179,6 +181,27 @@ Decl Parser::parse_type_decl() {
     decl.column = type_tok.column;
 
     decl.type_decl.name = expect(TokenType::IDENT, "expected type name").value;
+
+    // Optional type parameters: [T], [T Constraint], [T, U]
+    current_fn_type_params_.clear();
+    if (match(TokenType::LBRACKET)) {
+        while (!check(TokenType::RBRACKET) && !check(TokenType::EOF_TOKEN)) {
+            skip_newlines();
+            std::string tp_name = expect(TokenType::IDENT, "expected type parameter").value;
+            current_fn_type_params_.insert(tp_name);
+            decl.type_decl.type_params.push_back(tp_name);
+
+            // Optional constraint: T Constraint
+            if (check(TokenType::IDENT) && peek().value != ",") {
+                TypePtr constraint = parse_type();
+                decl.type_decl.type_constraints[tp_name] = std::move(constraint);
+            }
+
+            if (!match(TokenType::COMMA)) break;
+        }
+        expect(TokenType::RBRACKET, "expected ']'");
+    }
+
     expect(TokenType::LBRACE, "expected '{'");
 
     while (true) {
@@ -190,60 +213,58 @@ Decl Parser::parse_type_decl() {
             decl.type_decl.fields.push_back(std::move(field));
     }
     expect(TokenType::RBRACE, "expected '}'");
+    current_fn_type_params_.clear();
     return decl;
 }
 
-Decl Parser::parse_iface_decl() {
+Decl Parser::parse_constant_decl() {
     Decl decl;
-    decl.kind = DeclKind::IFACE;
-    Token iface_tok = advance(); // consume 'iface'
-    decl.line = iface_tok.line;
-    decl.column = iface_tok.column;
+    decl.kind = DeclKind::CONSTANT;
+    Token name_tok = advance(); // ALL_CAPS name
+    decl.line = name_tok.line;
+    decl.column = name_tok.column;
+    decl.constant_decl.name = name_tok.value;
+    decl.constant_decl.is_exported = is_exported_name(name_tok.value);
 
-    decl.iface_decl.name = expect(TokenType::IDENT, "expected interface name").value;
-    expect(TokenType::LBRACE, "expected '{'");
-
-    while (true) {
-        skip_newlines();
-        if (check(TokenType::RBRACE) || check(TokenType::EOF_TOKEN)) break;
-
-        expect(TokenType::KW_FN, "expected 'fn'");
-        std::string method_name = expect(TokenType::IDENT, "expected method name").value;
-
-        expect(TokenType::LPAREN, "expected '('");
-        bool is_pointer = check(TokenType::STAR);
-        TypePtr param_type = parse_type();
-        expect(TokenType::RPAREN, "expected ')'");
-
-        InterfaceMethod method;
-        method.name = method_name;
-        method.param_type = std::move(param_type);
-        method.is_pointer = is_pointer;
-        decl.iface_decl.methods.push_back(std::move(method));
-
-        skip_newlines();
+    if (check(TokenType::KW_IOTA)) {
+        advance(); // consume 'iota'
+        decl.constant_decl.is_iota = true;
+        decl.constant_decl.value = make_iota_literal(current_iota_index_++);
+    } else {
+        decl.constant_decl.is_iota = false;
+        decl.constant_decl.value = parse_expr();
     }
 
-    expect(TokenType::RBRACE, "expected '}'");
     return decl;
 }
 
-Decl Parser::parse_const_decl() {
+Decl Parser::parse_global_var_decl() {
     Decl decl;
-    decl.kind = DeclKind::CONST;
-    Token const_tok = advance(); // consume 'const'
-    decl.line = const_tok.line;
-    decl.column = const_tok.column;
+    decl.kind = DeclKind::GLOBAL_VAR;
+    Token name = advance(); // consume name
+    decl.line = name.line;
+    decl.column = name.column;
 
-    decl.const_decl.name = expect(TokenType::IDENT, "expected constant name").value;
+    decl.global_var_decl.name = name.value;
+    decl.global_var_decl.is_exported = is_exported_name(name.value);
 
-    // Optional type annotation
-    if (!check(TokenType::ASSIGN)) {
-        decl.const_decl.type = parse_type();
+    // Check for type annotation (not :=, not ., not ()
+    if (check(TokenType::TYPE_INT) || check(TokenType::TYPE_FLOAT) ||
+        check(TokenType::TYPE_BOOL) || check(TokenType::TYPE_STRING) ||
+        check(TokenType::TYPE_CHAR) || check(TokenType::TYPE_ERROR) ||
+        check(TokenType::TYPE_U8) || check(TokenType::TYPE_U16) ||
+        check(TokenType::TYPE_U32) || check(TokenType::TYPE_U64) ||
+        check(TokenType::TYPE_I8) || check(TokenType::TYPE_I16) ||
+        check(TokenType::TYPE_I32) || check(TokenType::TYPE_I64) ||
+        (check(TokenType::IDENT) && !check_next(TokenType::LPAREN) && !check_next(TokenType::DOT))) {
+        decl.global_var_decl.type = parse_type();
     }
 
-    expect(TokenType::ASSIGN, "expected '='");
-    decl.const_decl.value = parse_expr();
+    // Check for initializer
+    if (match(TokenType::ASSIGN)) {
+        decl.global_var_decl.value = parse_expr();
+    }
+
     return decl;
 }
 
@@ -289,6 +310,32 @@ Decl Parser::parse_import() {
 // ==================== Types ====================
 
 TypePtr Parser::parse_type() {
+    // Structural type: ~TypeName
+    if (check(TokenType::TILDE)) {
+        Token tilde_tok = advance(); // consume '~'
+        auto type = std::make_unique<TypeAnnotation>();
+        type->kind = TypeKind::STRUCTURAL;
+        type->line = tilde_tok.line;
+        type->column = tilde_tok.column;
+        if (match(TokenType::STAR)) {
+            auto ptr = std::make_unique<TypeAnnotation>();
+            ptr->kind = TypeKind::POINTER;
+            ptr->inner = std::make_unique<TypeAnnotation>();
+            ptr->inner->kind = TypeKind::STRUCTURAL;
+            Token name_tok = expect(TokenType::IDENT, "expected type name after '~*'");
+            ptr->inner->name = name_tok.value;
+            ptr->inner->line = name_tok.line;
+            ptr->inner->column = name_tok.column;
+            type->inner = std::move(ptr);
+        } else {
+            Token name_tok = expect(TokenType::IDENT, "expected type name after '~'");
+            type->name = name_tok.value;
+            type->line = tilde_tok.line;
+            type->column = tilde_tok.column;
+        }
+        return type;
+    }
+
     // Pointer type
     if (match(TokenType::STAR)) {
         auto type = std::make_unique<TypeAnnotation>();
@@ -379,6 +426,16 @@ TypePtr Parser::parse_named_type() {
     } else {
         type->kind = TypeKind::NAMED;
         type->name = name.value;
+
+        // Generic type arguments: Pair[int, string]
+        if (check(TokenType::LBRACKET)) {
+            advance(); // consume '['
+            while (!check(TokenType::RBRACKET) && !check(TokenType::EOF_TOKEN)) {
+                type->type_args.push_back(parse_type());
+                if (!match(TokenType::COMMA)) break;
+            }
+            expect(TokenType::RBRACKET, "expected ']'");
+        }
     }
     return type;
 }
@@ -401,10 +458,10 @@ StmtPtr Parser::parse_stmt() {
         stmt->column = t.column;
         return stmt;
     }
-    if (check(TokenType::KW_CONTINUE)) {
+    if (check(TokenType::KW_PASS)) {
         Token t = advance();
         auto stmt = std::make_unique<Stmt>();
-        stmt->kind = StmtKind::CONTINUE;
+        stmt->kind = StmtKind::PASS;
         stmt->line = t.line;
         stmt->column = t.column;
         return stmt;
@@ -601,13 +658,6 @@ StmtPtr Parser::parse_asm_stmt() {
     Token asm_tok = advance(); // consume 'asm'
     stmt->line = asm_tok.line;
     stmt->column = asm_tok.column;
-    stmt->asm_stmt.is_volatile = false;
-
-    // Optional "volatile" keyword before the string
-    if (check(TokenType::KW_VOLATILE)) {
-        advance();
-        stmt->asm_stmt.is_volatile = true;
-    }
 
     // Optional '(' for Zig-style asm("code" : ...)
     bool has_parens = match(TokenType::LPAREN);
@@ -810,9 +860,25 @@ StmtPtr Parser::parse_var_decl_or_expr_stmt() {
         if (check(TokenType::TYPE_INT) || check(TokenType::TYPE_FLOAT) ||
             check(TokenType::TYPE_BOOL) || check(TokenType::TYPE_STRING) ||
             check(TokenType::TYPE_CHAR) || check(TokenType::TYPE_ERROR) ||
+            check(TokenType::TYPE_U8) || check(TokenType::TYPE_U16) ||
+            check(TokenType::TYPE_U32) || check(TokenType::TYPE_U64) ||
+            check(TokenType::TYPE_I8) || check(TokenType::TYPE_I16) ||
+            check(TokenType::TYPE_I32) || check(TokenType::TYPE_I64) ||
+            check(TokenType::TILDE) ||
             (check(TokenType::IDENT) && !check_next(TokenType::LPAREN) && !check_next(TokenType::DOT))) {
-            // Advance past the type token to check what follows
+            // Advance past the type token (and optional generic args) to check what follows
             advance(); // consume type
+            // Handle generic type args: Pair[int, string]
+            if (check(TokenType::LBRACKET)) {
+                size_t gen_saved = pos_;
+                advance(); // consume '['
+                int depth = 1;
+                while (pos_ < tokens_.size() && depth > 0) {
+                    if (tokens_[pos_].type == TokenType::LBRACKET) depth++;
+                    if (tokens_[pos_].type == TokenType::RBRACKET) depth--;
+                    pos_++;
+                }
+            }
             // Check what follows the type
             if (check(TokenType::ASSIGN) || check(TokenType::SEMICOLON) ||
                 check(TokenType::NEWLINE) || check(TokenType::EOF_TOKEN) ||
@@ -1132,6 +1198,64 @@ ExprPtr Parser::parse_postfix() {
             continue;
         }
 
+        // Generic type args: Pair[int, string] or identity[int](args) — detect before indexing
+        if (check(TokenType::LBRACKET) && expr->kind == ExprKind::IDENT &&
+            !expr->ident.empty()) {
+            bool is_pascal = std::isupper(expr->ident[0]);
+
+            // Peek inside brackets: if it starts with a type token, it could be type args
+            size_t saved = pos_;
+            advance(); // consume '['
+            bool could_be_type_args = false;
+            if (check(TokenType::RBRACKET)) {
+                // Empty [] — not type args, restore
+                pos_ = saved;
+            } else if (check(TokenType::INT_LIT) || check(TokenType::FLOAT_LIT) ||
+                       check(TokenType::STRING_LIT) || check(TokenType::BOOL_LIT) ||
+                       check(TokenType::KW_NIL) || check(TokenType::LPAREN)) {
+                // Expression inside [] — indexing, not type args
+                pos_ = saved;
+            } else {
+                // Identifier inside brackets — could be type args
+                // For PascalCase: always treat as type args
+                // For lowercase: only if ] is followed by ( (generic function call)
+                if (is_pascal) {
+                    could_be_type_args = true;
+                } else {
+                    // Scan forward to find matching ] and check next token
+                    size_t scan = pos_; // pos_ is right after '['
+                    int depth = 1;
+                    while (scan < tokens_.size() && depth > 0) {
+                        if (tokens_[scan].type == TokenType::LBRACKET) depth++;
+                        if (tokens_[scan].type == TokenType::RBRACKET) depth--;
+                        scan++;
+                    }
+                    // scan now points to token after matching ']'
+                    if (scan < tokens_.size() && tokens_[scan].type == TokenType::LPAREN) {
+                        could_be_type_args = true;
+                    } else {
+                        pos_ = saved;
+                    }
+                }
+            }
+
+            if (could_be_type_args) {
+                auto gen = std::make_unique<Expr>();
+                gen->kind = ExprKind::GENERIC_REF;
+                gen->line = expr->line;
+                gen->column = expr->column;
+                gen->generic_ref.name = expr->ident;
+                // We already consumed '[' — parse type args
+                while (!check(TokenType::RBRACKET) && !check(TokenType::EOF_TOKEN)) {
+                    gen->generic_ref.type_args.push_back(parse_type());
+                    if (!match(TokenType::COMMA)) break;
+                }
+                expect(TokenType::RBRACKET, "expected ']'");
+                expr = std::move(gen);
+                continue;
+            }
+        }
+
         // Index: expr[index]
         if (check(TokenType::LBRACKET)) {
             advance(); // consume '['
@@ -1187,15 +1311,26 @@ ExprPtr Parser::parse_postfix() {
         }
 
         // Struct literal: Type{ field: value, ... }
-        // Only match uppercase identifiers (PascalCase type convention)
-        if (check(TokenType::LBRACE) && expr->kind == ExprKind::IDENT &&
-            !expr->ident.empty() && std::isupper(expr->ident[0])) {
+        // Match uppercase identifiers (PascalCase) or generic refs
+        if (check(TokenType::LBRACE) &&
+            ((expr->kind == ExprKind::IDENT && !expr->ident.empty() && std::isupper(expr->ident[0])) ||
+             expr->kind == ExprKind::GENERIC_REF)) {
             advance(); // consume '{'
             auto sl = std::make_unique<Expr>();
             sl->kind = ExprKind::STRUCT_LITERAL;
             sl->line = expr->line;
             sl->column = expr->column;
-            sl->struct_literal.type_name = expr->ident;
+            if (expr->kind == ExprKind::GENERIC_REF) {
+                sl->struct_literal.type_name = expr->generic_ref.name;
+                for (auto& t : expr->generic_ref.type_args) {
+                    auto ct = std::make_unique<TypeAnnotation>();
+                    ct->kind = t->kind;
+                    ct->name = t->name;
+                    sl->struct_literal.type_args.push_back(std::move(ct));
+                }
+            } else {
+                sl->struct_literal.type_name = expr->ident;
+            }
 
             while (true) {
                 skip_newlines();
@@ -1465,6 +1600,16 @@ ExprPtr clone_expr(const ExprPtr& src) {
             for (auto& a : src->call.args) {
                 dst->call.args.push_back(clone_expr(a));
             }
+            for (auto& t : src->call.type_args) {
+                auto ct = std::make_unique<TypeAnnotation>();
+                ct->kind = t->kind;
+                ct->name = t->name;
+                ct->array_size = t->array_size;
+                ct->array_size_name = t->array_size_name;
+                if (t->inner) ct->inner = std::make_unique<TypeAnnotation>();
+                // shallow copy inner for now — deep clone not needed for monomorphization
+                dst->call.type_args.push_back(std::move(ct));
+            }
             break;
         case ExprKind::INDEX:
             dst->index.object = clone_expr(src->index.object);
@@ -1486,6 +1631,12 @@ ExprPtr clone_expr(const ExprPtr& src) {
             break;
         case ExprKind::STRUCT_LITERAL:
             dst->struct_literal.type_name = src->struct_literal.type_name;
+            for (auto& t : src->struct_literal.type_args) {
+                auto ct = std::make_unique<TypeAnnotation>();
+                ct->kind = t->kind;
+                ct->name = t->name;
+                dst->struct_literal.type_args.push_back(std::move(ct));
+            }
             for (auto& f : src->struct_literal.fields) {
                 StructFieldInit sf;
                 sf.name = f.name;
@@ -1496,6 +1647,15 @@ ExprPtr clone_expr(const ExprPtr& src) {
         case ExprKind::POSTFIX_INC:
         case ExprKind::POSTFIX_DEC:
             dst->postfix.operand = clone_expr(src->postfix.operand);
+            break;
+        case ExprKind::GENERIC_REF:
+            dst->generic_ref.name = src->generic_ref.name;
+            for (auto& t : src->generic_ref.type_args) {
+                auto ct = std::make_unique<TypeAnnotation>();
+                ct->kind = t->kind;
+                ct->name = t->name;
+                dst->generic_ref.type_args.push_back(std::move(ct));
+            }
             break;
     }
     return dst;
@@ -1559,7 +1719,7 @@ StmtPtr clone_stmt(const StmtPtr& src) {
             }
             break;
         case StmtKind::BREAK:
-        case StmtKind::CONTINUE:
+        case StmtKind::PASS:
             break;
         case StmtKind::DEFER:
             dst->defer_stmt.expr = clone_expr(src->defer_stmt.expr);
@@ -1580,7 +1740,6 @@ StmtPtr clone_stmt(const StmtPtr& src) {
             break;
         case StmtKind::ASM:
             dst->asm_stmt.code = src->asm_stmt.code;
-            dst->asm_stmt.is_volatile = src->asm_stmt.is_volatile;
             dst->asm_stmt.clobbers = src->asm_stmt.clobbers;
             for (auto& o : src->asm_stmt.outputs) {
                 AsmOperand op;
@@ -1607,6 +1766,27 @@ StmtPtr clone_stmt(const StmtPtr& src) {
             break;
     }
     return dst;
+}
+
+ExprPtr Parser::make_iota_literal(int value) {
+    auto expr = std::make_unique<Expr>();
+    expr->kind = ExprKind::INT_LIT;
+    expr->int_val = value;
+    return expr;
+}
+
+bool Parser::is_all_caps(const std::string& name) {
+    if (name.empty()) return false;
+    for (char c : name) {
+        if (!std::isupper(c) && c != '_') return false;
+    }
+    return true;
+}
+
+bool Parser::is_exported_name(const std::string& name) {
+    if (name.empty()) return false;
+    if (name[0] == '_') return false;
+    return std::isupper(name[0]);
 }
 
 } // namespace binar

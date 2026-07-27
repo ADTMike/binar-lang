@@ -1,9 +1,0 @@
-// exit: 1
-import { os } from "os"
-fn main() {
-    x := 42
-    p := &x
-    q := p + 1
-    diff := q - p
-    os.Exit(diff)
-}

@@ -1,4 +1,4 @@
-// exit: 10
+// exit: 14
 // Tests: multiple types satisfying structural type
 import { os } from "os"
 
@@ -24,8 +24,8 @@ fn Process(l ~ZapLogger) int {
 
 fn main() {
     z := ZapLogger{X: 10}
-    c := ConsoleLogger{X: 20}
+    c := ConsoleLogger{X: 4}
     v1 := Process(z)
     v2 := Process(c)
-    os.Exit(v1)
+    os.Exit(v1 + v2)
 }

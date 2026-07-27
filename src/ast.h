@@ -23,13 +23,13 @@ using TypePtr = std::unique_ptr<TypeAnnotation>;
 // ==================== Type Annotations ====================
 
 enum class TypeKind {
-    NAMED,      // int, float, string, Vec2, etc.
-    POINTER,    // *int, *Vec2
-    SLICE,      // []int
-    ARRAY,      // [5]int
-    FUNCTION,   // fn(int, int) -> int
-    INTERFACE,  // Logger (interface type annotation)
-    TYPE_PARAM, // T (generic type parameter)
+    NAMED,       // int, float, string, Vec2, etc.
+    POINTER,     // *int, *Vec2
+    SLICE,       // []int
+    ARRAY,       // [5]int
+    FUNCTION,    // fn(int, int) -> int
+    STRUCTURAL,  // ~TypeName (structural type)
+    TYPE_PARAM,  // T (generic type parameter)
 };
 
 struct TypeAnnotation {
@@ -40,8 +40,11 @@ struct TypeAnnotation {
     std::string array_size_name;// ARRAY: const name for size
     std::vector<FnParam> fn_params;   // FUNCTION: params
     std::vector<TypePtr> fn_returns;  // FUNCTION: return types
+    std::vector<TypePtr> type_args;   // NAMED: generic type arguments (e.g. Pair[int, string])
+    int line;
+    int column;
 
-    TypeAnnotation() : kind(TypeKind::NAMED), array_size(-1) {}
+    TypeAnnotation() : kind(TypeKind::NAMED), array_size(-1), line(0), column(0) {}
 };
 
 // ==================== Expressions ====================
@@ -64,6 +67,7 @@ enum class ExprKind {
     SIZEOF,
     LEN,
     STRUCT_LITERAL,
+    GENERIC_REF,
     POSTFIX_INC,
     POSTFIX_DEC,
 };
@@ -94,6 +98,7 @@ struct UnaryExpr {
 struct CallExpr {
     ExprPtr callee;
     std::vector<ExprPtr> args;
+    std::vector<TypePtr> type_args;  // explicit generic type arguments
 };
 
 struct IndexExpr {
@@ -129,6 +134,7 @@ struct StructFieldInit {
 
 struct StructLiteralExpr {
     std::string type_name;
+    std::vector<TypePtr> type_args;  // generic type arguments
     std::vector<StructFieldInit> fields;
 };
 
@@ -138,6 +144,11 @@ struct PostfixExpr {
 
 struct LenExpr {
     ExprPtr arg;
+};
+
+struct GenericRefExpr {
+    std::string name;
+    std::vector<TypePtr> type_args;
 };
 
 struct Expr {
@@ -160,6 +171,7 @@ struct Expr {
     DotExpr dot;
     AssignExpr assign;
     StructLiteralExpr struct_literal;
+    GenericRefExpr generic_ref;
     PostfixExpr postfix;
     LenExpr len;
 
@@ -178,7 +190,7 @@ enum class StmtKind {
     FOR_RANGE,
     BLOCK,
     BREAK,
-    CONTINUE,
+    PASS,
     DEFER,
     SWITCH,
     ASM,
@@ -242,7 +254,6 @@ struct AsmOperand {
 
 struct AsmStmt {
     std::string code;
-    bool is_volatile;
     std::vector<AsmOperand> outputs;
     std::vector<AsmOperand> inputs;
     std::vector<std::string> clobbers;
@@ -282,25 +293,14 @@ struct Stmt {
 enum class DeclKind {
     FN,
     TYPE,
-    CONST,
+    CONSTANT,    // ALL_CAPS constant (inlined)
+    GLOBAL_VAR,  // global variable
     IMPORT,
-    IFACE,
 };
 
 struct FnParam {
     std::string name;
     TypePtr type;
-};
-
-struct InterfaceMethod {
-    std::string name;
-    TypePtr param_type;
-    bool is_pointer;
-};
-
-struct InterfaceDecl {
-    std::string name;
-    std::vector<InterfaceMethod> methods;
 };
 
 struct FnDecl {
@@ -311,7 +311,6 @@ struct FnDecl {
     bool has_body;
     std::vector<std::string> type_params;
     std::map<std::string, TypePtr> type_constraints;
-    bool is_interface_returning = false;  // true if any return type is an interface (error, user iface)
 };
 
 struct FieldDecl {
@@ -322,12 +321,22 @@ struct FieldDecl {
 struct TypeDecl {
     std::string name;
     std::vector<FieldDecl> fields;
+    std::vector<std::string> type_params;
+    std::map<std::string, TypePtr> type_constraints;
 };
 
-struct ConstDecl {
+struct ConstantDecl {
     std::string name;
-    ExprPtr value;
-    TypePtr type;  // optional explicit type
+    ExprPtr value;       // null for bare iota
+    bool is_iota;        // true if this uses iota
+    bool is_exported;    // true if not _ prefixed
+};
+
+struct GlobalVarDecl {
+    std::string name;
+    TypePtr type;        // optional explicit type
+    ExprPtr value;       // optional initializer
+    bool is_exported;    // true if _ prefixed = false, uppercase first = true, lowercase first = false
 };
 
 struct ImportBinding {
@@ -347,9 +356,9 @@ struct Decl {
 
     FnDecl fn;
     TypeDecl type_decl;
-    ConstDecl const_decl;
+    ConstantDecl constant_decl;
+    GlobalVarDecl global_var_decl;
     ImportBlock import_block;
-    InterfaceDecl iface_decl;
 
     Decl() : kind(DeclKind::FN), line(0), column(0) {}
 };

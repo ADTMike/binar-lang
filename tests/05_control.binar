@@ -1,0 +1,134 @@
+// exit: 0
+// Tests: if, else, else if, for, while, break, continue, nested
+import { os } from "os"
+
+fn check(expected int, actual int) {
+    if expected != actual {
+        os.Exit(1)
+    }
+}
+
+fn Max(a int, b int) int {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+fn main() {
+    // if
+    x := 10
+    r := 0
+    if x > 5 { r = 1 }
+    check(1, r)
+
+    // for loop sum 1..10
+    sum := 0
+    for i := 1; i <= 10; i = i + 1 {
+        sum = sum + i
+    }
+    check(55, sum)
+
+    // while loop
+    i := 0
+    while i < 10 {
+        i = i + 1
+    }
+    check(50, i * 5)
+
+    // break
+    sum2 := 0
+    for j := 0; j < 10; j = j + 1 {
+        if j == 5 {
+            break
+        }
+        sum2 = sum2 + 1
+    }
+    check(5, sum2)
+
+    // continue (pass)
+    sum3 := 0
+    for k := 0; k < 10; k = k + 1 {
+        if k % 2 == 0 {
+            pass
+        }
+        sum3 = sum3 + 1
+    }
+    check(5, sum3)
+
+    // nested loops
+    sum4 := 0
+    for m := 0; m < 10; m = m + 1 {
+        for n := 0; n < 5; n = n + 1 {
+            sum4 = sum4 + 1
+        }
+    }
+    check(50, sum4)
+
+    // nested if
+    v := 5
+    r2 := 0
+    if v > 3 {
+        if v > 4 {
+            r2 = 10
+        }
+    }
+    check(10, r2)
+
+    // if else both
+    x2 := 10
+    r3 := 0
+    if x2 > 5 {
+        r3 = 1
+    } else {
+        r3 = 0
+    }
+    check(1, r3)
+
+    // else if
+    x3 := 10
+    r4 := 0
+    if x3 > 20 {
+        r4 = 1
+    } else if x3 > 5 {
+        r4 = 2
+    } else {
+        r4 = 3
+    }
+    check(2, r4)
+
+    // if else value
+    a := 3
+    b := 7
+    r5 := Max(a, b)
+    check(7, r5)
+
+    // break early
+    x4 := 0
+    r6 := 0
+    for p := 0; p < 100; p = p + 1 {
+        x4 = x4 + 1
+        if x4 == 42 {
+            r6 = x4
+            break
+        }
+    }
+    check(42, r6)
+
+    // continue count
+    sum5 := 0
+    for q := 0; q < 10; q = q + 1 {
+        if q % 2 == 0 {
+            pass
+        }
+        sum5 = sum5 + 1
+    }
+    check(5, sum5)
+
+    // loop accumulation
+    result := 0
+    for s := 0; s < 10; s = s + 1 {
+        result = result + 10
+    }
+    check(100, result)
+}

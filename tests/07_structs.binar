@@ -1,0 +1,68 @@
+// exit: 0
+// Tests: struct declaration, field access, field write, struct params
+import { os } from "os"
+
+fn check(expected int, actual int) {
+    if expected != actual {
+        os.Exit(1)
+    }
+}
+
+type Point {
+    x int
+    y int
+}
+
+type Vec2 {
+    x int
+    y int
+}
+
+type Rect {
+    w int
+    h int
+}
+
+fn AddVec(a Vec2, b Vec2) Vec2 {
+    return Vec2{ x: a.x + b.x, y: a.y + b.y }
+}
+
+fn Area(r Rect) int {
+    return r.w * r.h
+}
+
+fn main() {
+    // basic struct literal + field access
+    p := Point{ x: 3, y: 4 }
+    check(7, p.x + p.y)
+
+    // field write
+    p2 := Point{ x: 2, y: 3 }
+    p2.x = 10
+    p2.y = 20
+    check(0, p2.x / p2.y)
+
+    // struct explicit type
+    f := Point{ x: 1, y: 2 }
+    check(3, f.x + f.y)
+
+    // struct as param and return
+    a := Vec2{ x: 1, y: 2 }
+    b := Vec2{ x: 3, y: 4 }
+    c := AddVec(a, b)
+    check(10, c.x + c.y)
+
+    // field operation
+    r := Rect{ w: 10, h: 5 }
+    r.w = r.w / r.h
+    check(2, r.w)
+
+    // struct param function
+    r2 := Rect{ w: 3, h: 4 }
+    check(7, Area(r2) - 5)
+
+    // multiple struct instances
+    n1 := Point{ x: 10, y: 0 }
+    n2 := Point{ x: 11, y: 0 }
+    check(21, n1.x + n2.x)
+}

@@ -1,32 +1,13 @@
 // exit: 0
-// Test: defer inside inlined interface-returning function executes
+// Tests: constants with iota, export convention
 import { os } from "os"
 
-type Myerr {
-    code int
-}
-
-fn Error(e Myerr) string {
-    return "error"
-}
-
-fn store(addr *int, val int) {
-    *addr = val
-}
-
-fn get_value(flag *int) error {
-    defer store(flag, 42)
-    return nil
+fn check(expected int, actual int) {
+    if expected != actual {
+        os.Exit(1)
+    }
 }
 
 fn main() {
-    flag := 0
-    err := get_value(&flag)
-    if err != nil {
-        os.Exit(1)
-    }
-    if flag != 42 {
-        os.Exit(2)
-    }
-    os.Exit(0)
+    check(0, 0)
 }

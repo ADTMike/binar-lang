@@ -1,0 +1,64 @@
+// exit: 0
+// Tests: address-of, dereference, pointer arithmetic, pointer write
+import { os } from "os"
+
+fn check(expected int, actual int) {
+    if expected != actual {
+        os.Exit(1)
+    }
+}
+
+fn main() {
+    // address-of and dereference
+    x := 42
+    p := &x
+    check(42, *p)
+
+    // deref assign
+    x2 := 10
+    p2 := &x2
+    *p2 = 99
+    check(99, x2)
+
+    // pointer arithmetic
+    x3 := 42
+    p3 := &x3
+    q := p3 + 1
+    diff := q - p3
+    check(1, diff)
+
+    // deref chain
+    x4 := 42
+    p4 := &x4
+    val := *p4
+    check(5, val - 37)
+
+    // multi new
+    a := 0
+    b := 0
+    pa := &a
+    pb := &b
+    *pa = 3
+    *pb = 7
+    check(10, *pa + *pb)
+
+    // new and addr
+    x5 := 42
+    p5 := &x5
+    y := 0
+    q2 := &y
+    *q2 = *p5
+    check(3, *q2 - 39)
+
+    // deref write then read
+    x6 := 5
+    p6 := &x6
+    *p6 = 5
+    check(0, x6 - 5)
+
+    // chained reassignment
+    x7 := 1
+    x7 = x7 + 1
+    x7 = x7 + 1
+    check(3, x7)
+}

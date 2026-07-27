@@ -1,0 +1,37 @@
+// exit: 0
+// Tests: functions, multi-return, params, call chains
+import { os } from "os"
+
+fn check(expected int, actual int) {
+    if expected != actual {
+        os.Exit(1)
+    }
+}
+
+fn Add(a int, b int) int {
+    return a + b
+}
+
+fn Divmod(a int, b int) int, error {
+    return a / b, nil
+}
+
+fn Sum(a int, b int, c int) int {
+    return a + b + c
+}
+
+fn Identity(x int) int {
+    return x
+}
+
+fn Double(x int) int {
+    return Identity(x) + Identity(x)
+}
+
+fn main() {
+    check(30, Add(10, 20))
+    q, _ := Divmod(17, 5)
+    check(3, q)
+    check(15, Sum(3, 5, 7))
+    check(42, Double(21))
+}
