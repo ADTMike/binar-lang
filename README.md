@@ -45,7 +45,7 @@ fn main() {
 ```binar
 fn main() {
     x := 10
-    var y int = 20
+    y int = 20
     z := x + y   // 30
 }
 ```
